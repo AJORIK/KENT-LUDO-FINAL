@@ -28,21 +28,18 @@ TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 WELCOME_TEXT = env_text(
     "WELCOME_TEXT",
-    "Привет! Добро пожаловать в наш Telegram-бот.\\n\\n"
+    "Привет! Добро пожаловать в наш Telegram-бот.\n\n"
     "Нажми на кнопку ниже, чтобы получить бонус.",
 )
 PROMO_BUTTON_TEXT = env_text("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
-PROMO_URL = os.getenv(
-    "PROMO_URL",
-    "https://lud.su/Jeton",
-)
+PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
 PROMO_MESSAGE = env_text(
     "PROMO_MESSAGE",
     '<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в '
-    '<a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>\\n\\n'
-    '🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀\\n\\n'
+    '<a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>\n\n'
+    '🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀\n\n'
     '✅ <a href="https://lud.su/Jeton">Активируй бонус</a> '
-    '<b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️\\n\\n'
+    '<b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️\n\n'
     '▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️',
 )
 BONUS_TEXT = env_text("BONUS_TEXT", PROMO_MESSAGE)
@@ -66,6 +63,7 @@ logger = logging.getLogger(__name__)
 
 BONUS_CALLBACK = "get_bonus"
 DAILY_JOB_NAME = "daily-broadcast-check"
+
 
 def parse_button_style(value: str, default: KeyboardButtonStyle) -> KeyboardButtonStyle:
     mapping = {
@@ -225,6 +223,9 @@ async def send_video_file(application: Application, chat_id: int) -> None:
 
 async def send_promo_bundle(application: Application, chat_id: int, *, mark_sent: bool) -> bool:
     try:
+        # Сначала медиа, потом текст с бонусом
+        await send_video_file(application, chat_id)
+
         await application.bot.send_message(
             chat_id=chat_id,
             text=PROMO_MESSAGE,
@@ -232,9 +233,10 @@ async def send_promo_bundle(application: Application, chat_id: int, *, mark_sent
             disable_web_page_preview=True,
             reply_markup=build_promo_keyboard(),
         )
-        await send_video_file(application, chat_id)
+
         if mark_sent:
             store.mark_sent(chat_id)
+
         logger.info("Промо-пакет отправлен в чат %s", chat_id)
         return True
     except Forbidden:
