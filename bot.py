@@ -8,7 +8,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import Forbidden, TelegramError
+from telegram.error import Forbidden
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 load_dotenv()
@@ -22,7 +22,6 @@ TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Текстовые сообщения с переносами
 WELCOME_TEXT = """Привет! Добро пожаловать в наш Telegram-бот.
 
 Нажми на кнопку ниже, чтобы получить бонус."""
@@ -69,7 +68,9 @@ def init_db():
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 last_daily_sent_at TIMESTAMPTZ,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                start_count INT NOT NULL DEFAULT 0
+                start_count INT NOT NULL DEFAULT 0,
+                username TEXT,
+                first_name TEXT
             );
         """)
         conn.commit()
@@ -96,15 +97,19 @@ def video_exists() -> bool:
 # -----------------------------
 # Работа с базой
 # -----------------------------
-def upsert_chat_db(chat_id: int) -> bool:
+def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[str]) -> bool:
+    """Добавляем/обновляем пользователя с username и first_name"""
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO subscribers (chat_id, start_count)
-            VALUES (%s, 1)
+            INSERT INTO subscribers (chat_id, start_count, username, first_name)
+            VALUES (%s, 1, %s, %s)
             ON CONFLICT (chat_id)
-            DO UPDATE SET start_count = subscribers.start_count + 1
+            DO UPDATE SET 
+                start_count = subscribers.start_count + 1,
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name
             RETURNING start_count;
-        """, (chat_id,))
+        """, (chat_id, username, first_name))
         result = cur.fetchone()
         conn.commit()
         return result['start_count'] == 1
@@ -157,14 +162,15 @@ def build_promo_keyboard() -> InlineKeyboardMarkup:
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if not chat:
+    user = update.effective_user
+    if not chat or not user:
         return
 
-    is_new = upsert_chat_db(chat.id)
+    is_new = upsert_chat_db(chat.id, user.username, user.first_name)
     if is_new:
-        logger.info("Новый подписчик через /start: %s", chat.id)
+        logger.info("Новый подписчик: %s (%s)", chat.id, user.username)
     else:
-        logger.info("Повторный /start: %s", chat.id)
+        logger.info("Повторный /start: %s (%s)", chat.id, user.username)
 
     await update.effective_message.reply_text(
         WELCOME_TEXT,
