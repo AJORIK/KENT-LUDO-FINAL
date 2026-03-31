@@ -12,13 +12,13 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
+    ParseMode,
 )
-from telegram.constants import KeyboardButtonStyle, ParseMode
 from telegram.error import Forbidden, TelegramError
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
 )
 
@@ -37,27 +37,27 @@ WELCOME_TEXT = os.getenv(
     "WELCOME_TEXT",
     "Привет! Добро пожаловать в наш Telegram-бот.\n\nНажми на кнопку ниже, чтобы получить бонус.",
 )
-PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
-PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
-PROMO_MESSAGE = os.getenv(
-    "PROMO_MESSAGE",
+
+# Правильное оформление HTML и переносы строк
+PROMO_MESSAGE = (
     '<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в '
     '<a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>\n\n'
     '🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀\n\n'
     '✅ <a href="https://lud.su/Jeton">Активируй бонус</a> '
     '<b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️\n\n'
-    '▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️',
+    '▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️'
 )
-BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
-BUTTON_STYLE = os.getenv("BUTTON_STYLE", "success").strip().lower()
-PROMO_BUTTON_STYLE = os.getenv("PROMO_BUTTON_STYLE", "primary").strip().lower()
-DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
-DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
 
+BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
+PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
+PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
 VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
 VIDEO_PATH = Path(VIDEO_FILE_NAME)
 if not VIDEO_PATH.is_absolute():
     VIDEO_PATH = BASE_DIR / VIDEO_PATH
+
+DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
+DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
 
 # -----------------------------
 # Логирование
@@ -69,7 +69,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # -----------------------------
-# Постгрес подключение
+# Подключение к PostgreSQL
 # -----------------------------
 conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
@@ -102,36 +102,24 @@ def parse_iso(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
 
-def parse_button_style(value: str, default: KeyboardButtonStyle) -> KeyboardButtonStyle:
-    mapping = {
-        "primary": KeyboardButtonStyle.PRIMARY,
-        "success": KeyboardButtonStyle.SUCCESS,
-        "danger": KeyboardButtonStyle.DANGER,
-    }
-    return mapping.get(value.lower(), default)
-
-START_BUTTON_STYLE = parse_button_style(BUTTON_STYLE, KeyboardButtonStyle.SUCCESS)
-PROMO_LINK_BUTTON_STYLE = parse_button_style(PROMO_BUTTON_STYLE, KeyboardButtonStyle.PRIMARY)
-
-BONUS_CALLBACK = "get_bonus"
-DAILY_JOB_NAME = "daily-broadcast-check"
+def video_exists() -> bool:
+    return VIDEO_PATH.exists() and VIDEO_PATH.is_file()
 
 # -----------------------------
-# Работа с БД
+# Работа с базой
 # -----------------------------
 def upsert_chat_db(chat_id: int) -> bool:
-    """Добавляет нового пользователя или увеличивает start_count"""
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO subscribers (chat_id, start_count)
             VALUES (%s, 1)
-            ON CONFLICT (chat_id) 
+            ON CONFLICT (chat_id)
             DO UPDATE SET start_count = subscribers.start_count + 1
             RETURNING start_count;
         """, (chat_id,))
         result = cur.fetchone()
         conn.commit()
-        return result['start_count'] == 1  # True если новый
+        return result['start_count'] == 1
 
 def get_active_subscribers() -> list[Dict[str, Any]]:
     with conn.cursor() as cur:
@@ -148,10 +136,13 @@ def mark_sent(chat_id: int) -> None:
 
 def deactivate(chat_id: int) -> None:
     with conn.cursor() as cur:
-        cur.execute("UPDATE subscribers SET is_active = FALSE WHERE chat_id = %s;", (chat_id,))
+        cur.execute(
+            "UPDATE subscribers SET is_active = FALSE WHERE chat_id = %s;",
+            (chat_id,)
+        )
         conn.commit()
 
-def should_send_now(record: Dict[str, Any], *, now: datetime) -> bool:
+def should_send_now(record: Dict[str, Any], now: datetime) -> bool:
     interval = timedelta(hours=DAILY_INTERVAL_HOURS)
     last_sent_at = record.get("last_daily_sent_at")
     created_at = record.get("created_at") or now
@@ -165,24 +156,18 @@ def should_send_now(record: Dict[str, Any], *, now: datetime) -> bool:
 # -----------------------------
 def build_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(BUTTON_TEXT, callback_data=BONUS_CALLBACK, style=START_BUTTON_STYLE)]]
+        [[InlineKeyboardButton(BUTTON_TEXT, callback_data="get_bonus")]]
     )
 
 def build_promo_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(PROMO_BUTTON_TEXT, url=PROMO_URL, style=PROMO_LINK_BUTTON_STYLE)]]
+        [[InlineKeyboardButton(PROMO_BUTTON_TEXT, url=PROMO_URL)]]
     )
-
-def video_exists() -> bool:
-    return VIDEO_PATH.exists() and VIDEO_PATH.is_file()
 
 # -----------------------------
 # Основные хендлеры
 # -----------------------------
-async def set_commands(application: Application) -> None:
-    await application.bot.set_my_commands([BotCommand("start", "Запустить бота и открыть кнопку бонуса")])
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not chat:
         return
@@ -193,84 +178,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         logger.info("Повторный /start: %s", chat.id)
 
-    await update.effective_message.reply_text(WELCOME_TEXT, reply_markup=build_keyboard())
+    await update.effective_message.reply_text(
+        WELCOME_TEXT,
+        reply_markup=build_keyboard()
+    )
 
-async def send_video_file(application: Application, chat_id: int) -> None:
-    if not video_exists():
+async def send_video(application: Application, chat_id: int):
+    if video_exists():
+        await application.bot.send_video(chat_id=chat_id, video=VIDEO_PATH, supports_streaming=True)
+    else:
         logger.warning("Видео не найдено: %s", VIDEO_PATH)
-        return
 
-    await application.bot.send_video(chat_id=chat_id, video=VIDEO_PATH, supports_streaming=True)
-
-async def send_promo_bundle(application: Application, chat_id: int, *, mark_sent_flag: bool) -> bool:
+async def send_promo(application: Application, chat_id: int, mark: bool = True):
     try:
-        await send_video_file(application, chat_id)
+        await send_video(application, chat_id)
         await application.bot.send_message(
             chat_id=chat_id,
             text=PROMO_MESSAGE,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
-            reply_markup=build_promo_keyboard(),
+            reply_markup=build_promo_keyboard()
         )
-        if mark_sent_flag:
+        if mark:
             mark_sent(chat_id)
-        logger.info("Промо-пакет отправлен в чат %s", chat_id)
+        logger.info("Промо отправлено в чат %s", chat_id)
         return True
     except Forbidden:
         deactivate(chat_id)
-        logger.warning("Чат %s недоступен: бот заблокирован или удалён", chat_id)
-    except TelegramError as exc:
-        logger.warning("Ошибка отправки в чат %s: %s", chat_id, exc)
+        logger.warning("Чат %s заблокирован или удалён", chat_id)
+    except Exception as e:
+        logger.warning("Ошибка отправки в чат %s: %s", chat_id, e)
     return False
 
-async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not query or not query.message:
-        return
-    await query.answer()
-    await send_promo_bundle(context.application, query.message.chat_id, mark_sent_flag=False)
+    if query and query.message:
+        await query.answer()
+        await send_promo(context.application, query.message.chat_id, mark=False)
 
-async def daily_broadcast_check(context: ContextTypes.DEFAULT_TYPE) -> None:
+async def daily_check(context: ContextTypes.DEFAULT_TYPE):
     now = utc_now()
-    sent = 0
     for record in get_active_subscribers():
-        chat_id = int(record["chat_id"])
-        if should_send_now(record, now=now):
-            success = await send_promo_bundle(context.application, chat_id, mark_sent_flag=True)
-            if success:
-                sent += 1
-    if sent:
-        logger.info("Цикл ежедневной рассылки завершён, отправлено: %s", sent)
+        if should_send_now(record, now):
+            await send_promo(context.application, int(record["chat_id"]))
 
-async def post_init(application: Application) -> None:
-    await set_commands(application)
-    existing_jobs = application.job_queue.get_jobs_by_name(DAILY_JOB_NAME)
-    for job in existing_jobs:
+async def post_init(application: Application):
+    await application.bot.set_my_commands([BotCommand("start", "Запустить бота и открыть кнопку бонуса")])
+    # ежедневная проверка
+    existing = application.job_queue.get_jobs_by_name("daily-check")
+    for job in existing:
         job.schedule_removal()
-
     application.job_queue.run_repeating(
-        daily_broadcast_check,
+        daily_check,
         interval=timedelta(minutes=DAILY_CHECK_EVERY_MINUTES),
         first=timedelta(minutes=1),
-        name=DAILY_JOB_NAME,
+        name="daily-check"
     )
-    logger.info("Команды установлены, проверка рассылки каждые %s мин.", DAILY_CHECK_EVERY_MINUTES)
-    logger.info("Видео для отправки: %s", VIDEO_PATH)
 
 # -----------------------------
 # Запуск
 # -----------------------------
-def main() -> int:
+def main():
     if not TOKEN or not DATABASE_URL:
-        raise RuntimeError("Не найден BOT_TOKEN или DATABASE_URL. Добавь переменные окружения на Railway.")
+        raise RuntimeError("Не найден BOT_TOKEN или DATABASE_URL!")
 
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(get_bonus, pattern=f"^{BONUS_CALLBACK}$"))
-
-    logger.info("%s запущен", BOT_NAME)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-    return 0
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(get_bonus, pattern="^get_bonus$"))
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
