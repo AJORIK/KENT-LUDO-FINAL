@@ -12,7 +12,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
-    ParseMode,
 )
 from telegram.error import Forbidden, TelegramError
 from telegram.ext import (
@@ -38,7 +37,7 @@ WELCOME_TEXT = os.getenv(
     "Привет! Добро пожаловать в наш Telegram-бот.\n\nНажми на кнопку ниже, чтобы получить бонус.",
 )
 
-# Правильное оформление HTML и переносы строк
+# HTML-сообщение с корректными переносами
 PROMO_MESSAGE = (
     '<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в '
     '<a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>\n\n'
@@ -195,7 +194,7 @@ async def send_promo(application: Application, chat_id: int, mark: bool = True):
         await application.bot.send_message(
             chat_id=chat_id,
             text=PROMO_MESSAGE,
-            parse_mode=ParseMode.HTML,
+            parse_mode="HTML",  # безопасно для всех версий
             disable_web_page_preview=True,
             reply_markup=build_promo_keyboard()
         )
@@ -224,7 +223,6 @@ async def daily_check(context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота и открыть кнопку бонуса")])
-    # ежедневная проверка
     existing = application.job_queue.get_jobs_by_name("daily-check")
     for job in existing:
         job.schedule_removal()
