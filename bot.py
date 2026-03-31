@@ -60,22 +60,22 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-def init_db():
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS subscribers (
-                chat_id BIGINT PRIMARY KEY,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_daily_sent_at TIMESTAMPTZ,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                start_count INT NOT NULL DEFAULT 0,
-                username TEXT,
-                first_name TEXT
-            );
-        """)
-        conn.commit()
-
-init_db()
+# -----------------------------
+# Создаём таблицу subscribers с username/first_name (один раз)
+# -----------------------------
+with conn.cursor() as cur:
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS subscribers (
+            chat_id BIGINT PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_daily_sent_at TIMESTAMPTZ,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            start_count INT NOT NULL DEFAULT 0,
+            username TEXT,
+            first_name TEXT
+        );
+    """)
+    conn.commit()
 
 # -----------------------------
 # Вспомогательные функции
@@ -98,7 +98,6 @@ def video_exists() -> bool:
 # Работа с базой
 # -----------------------------
 def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[str]) -> bool:
-    """Добавляем/обновляем пользователя с username и first_name"""
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO subscribers (chat_id, start_count, username, first_name)
