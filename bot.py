@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 # -----------------------------
-# Создаём таблицу subscribers с username/first_name (один раз)
+# Создаём/проверяем таблицу subscribers
 # -----------------------------
 with conn.cursor() as cur:
     cur.execute("""
@@ -76,6 +76,7 @@ with conn.cursor() as cur:
         );
     """)
     conn.commit()
+    logger.info("Таблица subscribers проверена/создана")
 
 # -----------------------------
 # Вспомогательные функции
