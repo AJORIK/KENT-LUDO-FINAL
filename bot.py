@@ -7,19 +7,9 @@ from typing import Any, Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
-from telegram import (
-    BotCommand,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-)
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import Forbidden, TelegramError
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 load_dotenv()
 
@@ -32,20 +22,19 @@ TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-WELCOME_TEXT = os.getenv(
-    "WELCOME_TEXT",
-    "Привет! Добро пожаловать в наш Telegram-бот.\n\nНажми на кнопку ниже, чтобы получить бонус.",
-)
+# Текстовые сообщения с переносами
+WELCOME_TEXT = """Привет! Добро пожаловать в наш Telegram-бот.
 
-# HTML-сообщение с корректными переносами
-PROMO_MESSAGE = (
-    '<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в '
-    '<a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>\n\n'
-    '🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀\n\n'
-    '✅ <a href="https://lud.su/Jeton">Активируй бонус</a> '
-    '<b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️\n\n'
-    '▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️'
-)
+Нажми на кнопку ниже, чтобы получить бонус."""
+
+PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в <a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>
+
+🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀
+
+✅ <a href="https://lud.su/Jeton">Активируй бонус</a> <b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️
+
+▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️
+"""
 
 BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
 PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
@@ -63,7 +52,7 @@ DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
 # -----------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -151,16 +140,16 @@ def should_send_now(record: Dict[str, Any], now: datetime) -> bool:
     return now >= last_sent_dt + interval
 
 # -----------------------------
-# Клавиатуры
+# Клавиатуры с эмодзи
 # -----------------------------
 def build_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(BUTTON_TEXT, callback_data="get_bonus")]]
+        [[InlineKeyboardButton("✅ " + BUTTON_TEXT, callback_data="get_bonus")]]
     )
 
 def build_promo_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(PROMO_BUTTON_TEXT, url=PROMO_URL)]]
+        [[InlineKeyboardButton("🎁 " + PROMO_BUTTON_TEXT, url=PROMO_URL)]]
     )
 
 # -----------------------------
@@ -194,7 +183,7 @@ async def send_promo(application: Application, chat_id: int, mark: bool = True):
         await application.bot.send_message(
             chat_id=chat_id,
             text=PROMO_MESSAGE,
-            parse_mode="HTML",  # безопасно для всех версий
+            parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=build_promo_keyboard()
         )
