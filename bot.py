@@ -215,71 +215,84 @@ async def admin_callback(update, context):
 async def text_handler(update, context):
     user = update.effective_user
     if not user: return
-    # Broadcast
+
+    # --- Broadcast ---
     if user.id in broadcast_data:
         data = broadcast_data[user.id]
+
+        # 1. Текст рассылки
         if data["text"] == "" and update.message.text:
             data["text"] = update.message.text
             await update.message.reply_text("Введите текст кнопки для URL (или оставьте пустым):")
             return
+
+        # 2. Название кнопки
         if data["button_text"] == "" and update.message.text is not None:
             data["button_text"] = update.message.text.strip()
             await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
             return
+
+        # 3. URL кнопки
         if data["url"] == "" and update.message.text is not None:
             data["url"] = update.message.text.strip()
             await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
             return
+
+        # 4. Медиа
         if data["media_path"] == "":
-            # обработка медиа
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
+            elif update.message.photo:
+                file = await update.message.photo[-1].get_file()
+                path = MEDIA_DIR / f"{file.file_id}.jpg"
+                path.parent.mkdir(exist_ok=True)
+                await file.download_to_drive(str(path))
+                data["media_path"] = str(path)
+            elif update.message.video:
+                file = await update.message.video.get_file()
+                path = MEDIA_DIR / f"{file.file_id}.mp4"
+                path.parent.mkdir(exist_ok=True)
+                await file.download_to_drive(str(path))
+                data["media_path"] = str(path)
             else:
-                if update.message.photo:
-                    file = await update.message.photo[-1].get_file()
-                    path = MEDIA_DIR / f"{file.file_id}.jpg"
-                    await file.download_to_drive(str(path))
-                    data["media_path"] = path
-                elif update.message.video:
-                    file = await update.message.video.get_file()
-                    path = MEDIA_DIR / f"{file.file_id}.mp4"
-                    await file.download_to_drive(str(path))
-                    data["media_path"] = path
-                else:
-                    await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
-                    return
+                await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
+                return
+
             # Отправка рассылки
             keyboard = None
             if data["button_text"] and data["url"]:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
-
             sent_count = 0
             for record in get_active_subscribers():
                 try:
+                    chat_id = int(record["chat_id"])
                     if data["media_path"]:
-                        if data["media_path"].suffix.lower() in (".mp4", ".mov", ".mkv"):
-                            await context.bot.send_video(int(record["chat_id"]),
-                                                         video=str(data["media_path"]),
+                        if data["media_path"].lower().endswith((".mp4", ".mov", ".mkv")):
+                            await context.bot.send_video(chat_id,
+                                                         video=data["media_path"],
                                                          caption=data["text"],
                                                          parse_mode="HTML",
                                                          reply_markup=keyboard)
                         else:
-                            await context.bot.send_photo(int(record["chat_id"]),
-                                                         photo=str(data["media_path"]),
+                            await context.bot.send_photo(chat_id,
+                                                         photo=data["media_path"],
                                                          caption=data["text"],
                                                          parse_mode="HTML",
                                                          reply_markup=keyboard)
                     else:
-                        await context.bot.send_message(int(record["chat_id"]),
+                        await context.bot.send_message(chat_id,
                                                        text=data["text"],
                                                        parse_mode="HTML",
                                                        reply_markup=keyboard)
                     sent_count += 1
-                except Exception: continue
+                except Exception as e:
+                    logger.warning("Ошибка при отправке рассылки пользователю %s: %s", record["chat_id"], e)
+                    continue
             del broadcast_data[user.id]
             await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
             return
-    # Deactivate
+
+    # --- Deactivate ---
     if user.id in deactivate_pending:
         chat_id_text = update.message.text.strip()
         del deactivate_pending[user.id]
