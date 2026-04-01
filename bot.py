@@ -24,8 +24,11 @@ load_dotenv()
 # Настройки
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
+MEDIA_DIR = BASE_DIR / "tmp_media"
+MEDIA_DIR.mkdir(exist_ok=True)
 
 TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 DATABASE_URL = os.getenv("DATABASE_URL")
 VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
 VIDEO_PATH = Path(VIDEO_FILE_NAME)
@@ -138,16 +141,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat, user = update.effective_chat, update.effective_user
     if not chat or not user: return
     upsert_chat_db(chat.id, user.username, user.first_name)
-    await update.message.reply_text(WELCOME_TEXT, reply_markup=build_keyboard())
-
-async def send_video(application, chat_id):
     if video_exists():
-        await application.bot.send_video(chat_id=chat_id, video=VIDEO_PATH, supports_streaming=True)
+        await context.bot.send_video(chat.id, VIDEO_PATH, supports_streaming=True)
+    await context.bot.send_message(chat.id, text=PROMO_MESSAGE, parse_mode="HTML",
+                                   disable_web_page_preview=True, reply_markup=build_promo_keyboard())
 
 async def send_promo(application, chat_id, mark=True):
     try:
-        await send_video(application, chat_id)
-        await application.bot.send_message(chat_id=chat_id, text=PROMO_MESSAGE, parse_mode="HTML",
+        if video_exists():
+            await application.bot.send_video(chat_id, VIDEO_PATH, supports_streaming=True)
+        await application.bot.send_message(chat_id, text=PROMO_MESSAGE, parse_mode="HTML",
                                            disable_web_page_preview=True, reply_markup=build_promo_keyboard())
         if mark: mark_sent(chat_id)
         return True
@@ -159,16 +162,16 @@ async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await send_promo(context.application, query.message.chat_id, mark=False)
 
-async def daily_check(context: ContextTypes.DEFAULT_TYPE):
+async def daily_check(context):
     now = utc_now()
     for record in get_active_subscribers():
         if should_send_now(record, now):
             await send_promo(context.application, int(record["chat_id"]))
 
 # -----------------------------
-# Admin menu
+# Admin menu & callback
 # -----------------------------
-async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_menu(update, context):
     user = update.effective_user
     if not user or user.username not in ADMINS:
         await update.message.reply_text("У вас нет прав для этого меню."); return
@@ -181,12 +184,11 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text("🛠 Админ-меню", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_callback(update, context):
     query = update.callback_query
     user = update.effective_user
     if not user or user.username not in ADMINS: await query.answer("Нет прав"); return
     data = query.data
-
     if data == "send_all":
         for record in get_active_subscribers():
             await send_promo(context.application, int(record["chat_id"]))
@@ -210,11 +212,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 # Text handler (broadcast + deactivate)
 # -----------------------------
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_handler(update, context):
     user = update.effective_user
     if not user: return
-
-    # --- Broadcast
+    # Broadcast
     if user.id in broadcast_data:
         data = broadcast_data[user.id]
         if data["text"] == "" and update.message.text:
@@ -230,16 +231,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
             return
         if data["media_path"] == "":
-            # Обработка медиа
+            # обработка медиа
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
             else:
                 if update.message.photo:
                     file = await update.message.photo[-1].get_file()
-                    data["media_path"] = await file.download_to_drive()
+                    path = MEDIA_DIR / f"{file.file_id}.jpg"
+                    await file.download_to_drive(str(path))
+                    data["media_path"] = path
                 elif update.message.video:
                     file = await update.message.video.get_file()
-                    data["media_path"] = await file.download_to_drive()
+                    path = MEDIA_DIR / f"{file.file_id}.mp4"
+                    await file.download_to_drive(str(path))
+                    data["media_path"] = path
                 else:
                     await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
                     return
@@ -247,40 +252,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = None
             if data["button_text"] and data["url"]:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
+
             sent_count = 0
             for record in get_active_subscribers():
                 try:
                     if data["media_path"]:
-                        if data["media_path"].lower().endswith((".mp4", ".mov", ".mkv")):
-                            await context.bot.send_video(
-                                chat_id=int(record["chat_id"]),
-                                video=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
+                        if data["media_path"].suffix.lower() in (".mp4", ".mov", ".mkv"):
+                            await context.bot.send_video(int(record["chat_id"]),
+                                                         video=str(data["media_path"]),
+                                                         caption=data["text"],
+                                                         parse_mode="HTML",
+                                                         reply_markup=keyboard)
                         else:
-                            await context.bot.send_photo(
-                                chat_id=int(record["chat_id"]),
-                                photo=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
+                            await context.bot.send_photo(int(record["chat_id"]),
+                                                         photo=str(data["media_path"]),
+                                                         caption=data["text"],
+                                                         parse_mode="HTML",
+                                                         reply_markup=keyboard)
                     else:
-                        await context.bot.send_message(
-                            chat_id=int(record["chat_id"]),
-                            text=data["text"],
-                            parse_mode="HTML",
-                            reply_markup=keyboard
-                        )
+                        await context.bot.send_message(int(record["chat_id"]),
+                                                       text=data["text"],
+                                                       parse_mode="HTML",
+                                                       reply_markup=keyboard)
                     sent_count += 1
                 except Exception: continue
             del broadcast_data[user.id]
             await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
             return
-
-    # --- Deactivate
+    # Deactivate
     if user.id in deactivate_pending:
         chat_id_text = update.message.text.strip()
         del deactivate_pending[user.id]
@@ -293,18 +292,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # -----------------------------
-# Инициализация
+# Инициализация и запуск
 # -----------------------------
-async def post_init(application: Application):
+async def post_init(application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
     existing = application.job_queue.get_jobs_by_name("daily-check")
-    for job in existing: job.schedule_removal()
+    for job in existing:
+        job.schedule_removal()
     application.job_queue.run_repeating(daily_check, interval=timedelta(minutes=DAILY_CHECK_EVERY_MINUTES),
                                         first=timedelta(minutes=1), name="daily-check")
 
-# -----------------------------
-# Запуск
-# -----------------------------
+
 def main():
     if not TOKEN or not DATABASE_URL:
         raise RuntimeError("Не найден BOT_TOKEN или DATABASE_URL!")
@@ -315,6 +313,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
