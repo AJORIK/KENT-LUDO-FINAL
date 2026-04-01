@@ -197,7 +197,7 @@ async def admin_callback(update, context):
         if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
         await query.answer(msg or "Активных пользователей нет.", show_alert=True)
     elif data == "broadcast":
-        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": ""}
+        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": "", "media_type": None}
         await query.answer()
         await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
     elif data == "deactivate":
@@ -206,7 +206,7 @@ async def admin_callback(update, context):
         await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Text handler (broadcast + deactivate) с поддержкой медиа без сохранения
+# Text handler (broadcast + deactivate) с media_type
 # -----------------------------
 async def text_handler(update, context):
     user = update.effective_user
@@ -234,16 +234,19 @@ async def text_handler(update, context):
             await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
             return
 
-        # 4. Медиа без локального сохранения
-        if data["media_path"] == "":
+        # 4. Медиа без локального хранения
+        if data.get("media_path", "") == "":
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
+                data["media_type"] = None
             elif update.message.photo:
                 file = await update.message.photo[-1].get_file()
                 data["media_path"] = file.file_id
+                data["media_type"] = "photo"
             elif update.message.video:
                 file = await update.message.video.get_file()
                 data["media_path"] = file.file_id
+                data["media_type"] = "video"
             else:
                 await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
                 return
@@ -258,24 +261,29 @@ async def text_handler(update, context):
                 try:
                     chat_id = int(record["chat_id"])
                     if data["media_path"]:
-                        # проверка на видео
-                        if update.message.video or str(data["media_path"]).endswith((".mp4",".mov",".mkv")):
-                            await context.bot.send_video(chat_id,
-                                                         video=data["media_path"],
-                                                         caption=data["text"],
-                                                         parse_mode="HTML",
-                                                         reply_markup=keyboard)
-                        else:
-                            await context.bot.send_photo(chat_id,
-                                                         photo=data["media_path"],
-                                                         caption=data["text"],
-                                                         parse_mode="HTML",
-                                                         reply_markup=keyboard)
+                        if data["media_type"] == "video":
+                            await context.bot.send_video(
+                                chat_id,
+                                video=data["media_path"],
+                                caption=data["text"],
+                                parse_mode="HTML",
+                                reply_markup=keyboard
+                            )
+                        else:  # photo
+                            await context.bot.send_photo(
+                                chat_id,
+                                photo=data["media_path"],
+                                caption=data["text"],
+                                parse_mode="HTML",
+                                reply_markup=keyboard
+                            )
                     else:
-                        await context.bot.send_message(chat_id,
-                                                       text=data["text"],
-                                                       parse_mode="HTML",
-                                                       reply_markup=keyboard)
+                        await context.bot.send_message(
+                            chat_id,
+                            text=data["text"],
+                            parse_mode="HTML",
+                            reply_markup=keyboard
+                        )
                     sent_count += 1
                 except Exception as e:
                     logger.warning("Ошибка при отправке рассылки пользователю %s: %s", record["chat_id"], e)
