@@ -196,7 +196,7 @@ async def admin_callback(update, context):
         if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
         await query.answer(msg or "Активных пользователей нет.", show_alert=True)
     elif data == "broadcast":
-        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": None, "media_type": None}
+        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": "", "media_type": None}
         await query.answer()
         await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
     elif data == "deactivate":
@@ -205,14 +205,14 @@ async def admin_callback(update, context):
         await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Text handler (broadcast + deactivate) для админов
+# Text handler (broadcast + deactivate) с media_type
+# Только для админов, сразу рассылка
 # -----------------------------
 async def text_handler(update, context):
     user = update.effective_user
     if not user:
         return
 
-    # --- Broadcast (только для админов) ---
     if user.id in broadcast_data:
         data = broadcast_data[user.id]
 
@@ -235,18 +235,16 @@ async def text_handler(update, context):
             return
 
         # 4. Медиа (только админ)
-        if data["media_path"] is None:
+        if data["media_path"] == "":
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
                 data["media_type"] = None
             elif user.username in ADMINS:
                 if update.message.photo:
-                    file = await update.message.photo[-1].get_file()
-                    data["media_path"] = file.file_id
+                    data["media_path"] = update.message.photo[-1].file_id
                     data["media_type"] = "photo"
                 elif update.message.video:
-                    file = await update.message.video.get_file()
-                    data["media_path"] = file.file_id
+                    data["media_path"] = update.message.video.file_id
                     data["media_type"] = "video"
                 else:
                     await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
@@ -265,28 +263,16 @@ async def text_handler(update, context):
             try:
                 chat_id = int(record["chat_id"])
                 if data["media_type"] == "video":
-                    await context.bot.send_video(
-                        chat_id,
-                        video=data["media_path"],
-                        caption=data["text"],
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
+                    await context.bot.send_video(chat_id, video=data["media_path"],
+                                                 caption=data["text"], parse_mode="HTML",
+                                                 reply_markup=keyboard)
                 elif data["media_type"] == "photo":
-                    await context.bot.send_photo(
-                        chat_id,
-                        photo=data["media_path"],
-                        caption=data["text"],
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
+                    await context.bot.send_photo(chat_id, photo=data["media_path"],
+                                                 caption=data["text"], parse_mode="HTML",
+                                                 reply_markup=keyboard)
                 else:
-                    await context.bot.send_message(
-                        chat_id,
-                        text=data["text"],
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
+                    await context.bot.send_message(chat_id, text=data["text"],
+                                                   parse_mode="HTML", reply_markup=keyboard)
                 sent_count += 1
             except Exception:
                 continue
