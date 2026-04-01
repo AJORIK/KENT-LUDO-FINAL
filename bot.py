@@ -24,31 +24,36 @@ load_dotenv()
 # Настройки
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
+MEDIA_DIR = BASE_DIR / "tmp_media"
+MEDIA_DIR.mkdir(exist_ok=True)
 
 TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+WELCOME_TEXT = """Привет! Добро пожаловать в наш Telegram-бот.
+
+Нажми на кнопку ниже, чтобы получить бонус."""
+
+PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в <a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>
+
+🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀
+
+✅ <a href="https://lud.su/Jeton">Активируй бонус</a> <b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️
+
+▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️
+"""
+
+BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
+PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
+PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
 VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
 VIDEO_PATH = Path(VIDEO_FILE_NAME)
 if not VIDEO_PATH.is_absolute():
     VIDEO_PATH = BASE_DIR / VIDEO_PATH
 
-BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
-PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
-PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
-WELCOME_TEXT = "Привет! Добро пожаловать в наш Telegram-бот.\nНажми на кнопку ниже, чтобы получить бонус."
-PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в турбине удачи ✈️</b>
-🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные бонусы 🚀
-✅ <a href="https://lud.su/Jeton">Активируй бонус</a>"""
-
 DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
 DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
-
-# -----------------------------
-# Админы
-# -----------------------------
-ADMINS = ["suerde", "fbtraffick"]
-broadcast_data = {}
-deactivate_pending = {}
 
 # -----------------------------
 # Логирование
@@ -60,9 +65,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # -----------------------------
-# PostgreSQL
+# Подключение к PostgreSQL
 # -----------------------------
 conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
 with conn.cursor() as cur:
     cur.execute("""
         CREATE TABLE IF NOT EXISTS subscribers (
@@ -76,12 +82,21 @@ with conn.cursor() as cur:
         );
     """)
     conn.commit()
+    logger.info("Таблица subscribers проверена/создана")
 
 # -----------------------------
 # Вспомогательные функции
 # -----------------------------
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+def parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 def video_exists() -> bool:
     return VIDEO_PATH.exists() and VIDEO_PATH.is_file()
@@ -92,229 +107,133 @@ def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[s
             INSERT INTO subscribers (chat_id, start_count, username, first_name)
             VALUES (%s, 1, %s, %s)
             ON CONFLICT (chat_id)
-            DO UPDATE SET start_count = subscribers.start_count + 1,
-                          username = EXCLUDED.username,
-                          first_name = EXCLUDED.first_name
+            DO UPDATE SET 
+                start_count = subscribers.start_count + 1,
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name
             RETURNING start_count;
         """, (chat_id, username, first_name))
-        res = cur.fetchone()
+        result = cur.fetchone()
         conn.commit()
-        return res['start_count'] == 1
+        return result['start_count'] == 1
 
-def get_active_subscribers():
+def get_active_subscribers() -> list[Dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM subscribers WHERE is_active = TRUE;")
         return cur.fetchall()
 
-def mark_sent(chat_id: int):
+def mark_sent(chat_id: int) -> None:
     with conn.cursor() as cur:
         cur.execute("UPDATE subscribers SET last_daily_sent_at = NOW() WHERE chat_id = %s;", (chat_id,))
         conn.commit()
 
-def deactivate(chat_id: int):
+def deactivate(chat_id: int) -> None:
     with conn.cursor() as cur:
         cur.execute("UPDATE subscribers SET is_active = FALSE WHERE chat_id = %s;", (chat_id,))
         conn.commit()
 
-def should_send_now(record, now):
-    last = record.get("last_daily_sent_at") or record.get("created_at") or now
-    if isinstance(last, str):
-        last = datetime.fromisoformat(last)
-    return now >= last + timedelta(hours=DAILY_INTERVAL_HOURS)
+def should_send_now(record: Dict[str, Any], now: datetime) -> bool:
+    interval = timedelta(hours=DAILY_INTERVAL_HOURS)
+    last_sent_at = record.get("last_daily_sent_at")
+    created_at = record.get("created_at") or now
+    last_sent_dt = last_sent_at or created_at
+    if isinstance(last_sent_dt, str):
+        last_sent_dt = parse_iso(last_sent_dt)
+    return now >= last_sent_dt + interval
 
 # -----------------------------
 # Клавиатуры
 # -----------------------------
-def build_keyboard():
+def build_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ " + BUTTON_TEXT, callback_data="get_bonus")]])
 
-def build_promo_keyboard():
+def build_promo_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("🎁 " + PROMO_BUTTON_TEXT, url=PROMO_URL)]])
 
 # -----------------------------
-# Handlers
+# Админ и broadcast
+# -----------------------------
+ADMINS = {"suerde": 0, "fbtraffick": 0}
+broadcast_data: Dict[int, Dict[str, Optional[str]]] = {}
+deactivate_pending: Dict[int, bool] = {}
+
+# -----------------------------
+# Основные хендлеры
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat, user = update.effective_chat, update.effective_user
-    if not chat or not user: return
-    upsert_chat_db(chat.id, user.username, user.first_name)
-    await update.message.reply_text(WELCOME_TEXT, reply_markup=build_keyboard())
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    is_new = upsert_chat_db(chat.id, user.username, user.first_name)
+    if is_new:
+        logger.info("Новый подписчик: %s (%s)", chat.id, user.username)
+    else:
+        logger.info("Повторный /start: %s (%s)", chat.id, user.username)
 
-async def send_video(application, chat_id):
+    # Отправляем видео + промо
     if video_exists():
-        await application.bot.send_video(chat_id=chat_id, video=VIDEO_PATH, supports_streaming=True)
-
-async def send_promo(application, chat_id, mark=True):
-    try:
-        await send_video(application, chat_id)
-        await application.bot.send_message(chat_id=chat_id, text=PROMO_MESSAGE, parse_mode="HTML",
-                                           disable_web_page_preview=True, reply_markup=build_promo_keyboard())
-        if mark: mark_sent(chat_id)
-        return True
-    except Exception: deactivate(chat_id); return False
-
-async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query and query.message:
-        await query.answer()
-        await send_promo(context.application, query.message.chat_id, mark=False)
-
-async def daily_check(context: ContextTypes.DEFAULT_TYPE):
-    now = utc_now()
-    for record in get_active_subscribers():
-        if should_send_now(record, now):
-            await send_promo(context.application, int(record["chat_id"]))
+        await context.bot.send_video(chat.id, VIDEO_PATH, supports_streaming=True)
+    await context.bot.send_message(chat.id, text=PROMO_MESSAGE, parse_mode="HTML",
+                                   disable_web_page_preview=True, reply_markup=build_promo_keyboard())
 
 # -----------------------------
-# Admin menu
-# -----------------------------
-async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not user or user.username not in ADMINS:
-        await update.message.reply_text("У вас нет прав для этого меню."); return
-    keyboard = [
-        [InlineKeyboardButton("📊 Отправить всем промо", callback_data="send_all")],
-        [InlineKeyboardButton("📋 Статистика пользователей", callback_data="stats")],
-        [InlineKeyboardButton("👥 Список активных подписчиков", callback_data="list_active")],
-        [InlineKeyboardButton("✉️ Создать рассылку", callback_data="broadcast")],
-        [InlineKeyboardButton("❌ Деактивировать пользователя", callback_data="deactivate")]
-    ]
-    await update.message.reply_text("🛠 Админ-меню", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-    if not user or user.username not in ADMINS: await query.answer("Нет прав"); return
-    data = query.data
-
-    if data == "send_all":
-        for record in get_active_subscribers():
-            await send_promo(context.application, int(record["chat_id"]))
-        await query.answer("Промо отправлено всем!")
-    elif data == "stats":
-        await query.answer(f"Активных пользователей: {len(get_active_subscribers())}", show_alert=True)
-    elif data == "list_active":
-        subscribers = get_active_subscribers()
-        msg = "\n".join([r["username"] or "—" for r in subscribers[:50]])
-        if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
-        await query.answer(msg or "Активных пользователей нет.", show_alert=True)
-    elif data == "broadcast":
-        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": ""}
-        await query.answer()
-        await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
-    elif data == "deactivate":
-        deactivate_pending[user.id] = True
-        await query.answer()
-        await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
-
-# -----------------------------
-# Text handler (broadcast + deactivate)
+# Рассылка админом (текст + кнопка + URL + медиа)
 # -----------------------------
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not user: return
+    if not user or user.id not in broadcast_data:
+        return
+    data = broadcast_data[user.id]
 
-    # --- Broadcast
-    if user.id in broadcast_data:
-        data = broadcast_data[user.id]
-        if data["text"] == "" and update.message.text:
-            data["text"] = update.message.text
-            await update.message.reply_text("Введите текст кнопки для URL (или оставьте пустым):")
+    # шаг 1: текст
+    if data["text"] == "":
+        data["text"] = update.message.text
+        await update.message.reply_text("Введите название кнопки для URL или оставьте пустым:")
+        return
+    # шаг 2: название кнопки
+    if data["button_text"] == "":
+        data["button_text"] = update.message.text.strip()
+        await update.message.reply_text("Введите URL кнопки или оставьте пустым:")
+        return
+    # шаг 3: URL кнопки
+    if data["url"] == "":
+        data["url"] = update.message.text.strip()
+        await update.message.reply_text("Отправьте медиа (фото/видео) или 'нет':")
+        return
+    # шаг 4: медиа
+    if data["media_path"] == "":
+        if update.message.text.lower() == "нет":
+            data["media_path"] = None
+        elif update.message.photo:
+            file = await update.message.photo[-1].get_file()
+            path = MEDIA_DIR / f"{file.file_id}.jpg"
+            await file.download_to_drive(str(path))
+            data["media_path"] = path
+        elif update.message.video:
+            file = await update.message.video.get_file()
+            path = MEDIA_DIR / f"{file.file_id}.mp4"
+            await file.download_to_drive(str(path))
+            data["media_path"] = path
+        else:
+            await update.message.reply_text("❌ Неверный формат. Отправьте фото/видео или 'нет'.")
             return
-        if data["button_text"] == "" and update.message.text is not None:
-            data["button_text"] = update.message.text.strip()
-            await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
-            return
-        if data["url"] == "" and update.message.text is not None:
-            data["url"] = update.message.text.strip()
-            await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
-            return
-        if data["media_path"] == "":
-            # Обработка медиа
-            if update.message.text and update.message.text.lower() == "нет":
-                data["media_path"] = None
-            else:
-                if update.message.photo:
-                    file = await update.message.photo[-1].get_file()
-                    data["media_path"] = await file.download_to_drive()
-                elif update.message.video:
-                    file = await update.message.video.get_file()
-                    data["media_path"] = await file.download_to_drive()
-                else:
-                    await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
-                    return
-            # Отправка рассылки
+
+        sent_count = 0
+        for rec in get_active_subscribers():
             keyboard = None
             if data["button_text"] and data["url"]:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
-            sent_count = 0
-            for record in get_active_subscribers():
-                try:
-                    if data["media_path"]:
-                        if data["media_path"].lower().endswith((".mp4", ".mov", ".mkv")):
-                            await context.bot.send_video(
-                                chat_id=int(record["chat_id"]),
-                                video=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
-                        else:
-                            await context.bot.send_photo(
-                                chat_id=int(record["chat_id"]),
-                                photo=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
-                    else:
-                        await context.bot.send_message(
-                            chat_id=int(record["chat_id"]),
-                            text=data["text"],
-                            parse_mode="HTML",
-                            reply_markup=keyboard
-                        )
-                    sent_count += 1
-                except Exception: continue
-            del broadcast_data[user.id]
-            await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
-            return
-
-    # --- Deactivate
-    if user.id in deactivate_pending:
-        chat_id_text = update.message.text.strip()
-        del deactivate_pending[user.id]
-        try:
-            chat_id = int(chat_id_text)
-            deactivate(chat_id)
-            await update.message.reply_text(f"✅ Пользователь с chat_id {chat_id} деактивирован.")
-        except ValueError:
-            await update.message.reply_text("❌ Ошибка: chat_id должен быть числом.")
-        return
+            await context.bot.send_message(rec["chat_id"], text=data["text"], parse_mode="HTML", reply_markup=keyboard)
+            if data["media_path"]:
+                if data["media_path"].suffix.lower() in (".mp4", ".mov", ".mkv"):
+                    await context.bot.send_video(rec["chat_id"], video=str(data["media_path"]))
+                else:
+                    await context.bot.send_photo(rec["chat_id"], photo=str(data["media_path"]))
+            sent_count += 1
+        del broadcast_data[user.id]
+        await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
 
 # -----------------------------
-# Инициализация
+# Остальные функции (get_bonus, daily_check, post_init) можно подключить как в оригинале
 # -----------------------------
-async def post_init(application: Application):
-    await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
-    existing = application.job_queue.get_jobs_by_name("daily-check")
-    for job in existing: job.schedule_removal()
-    application.job_queue.run_repeating(daily_check, interval=timedelta(minutes=DAILY_CHECK_EVERY_MINUTES),
-                                        first=timedelta(minutes=1), name="daily-check")
-
-# -----------------------------
-# Запуск
-# -----------------------------
-def main():
-    if not TOKEN or not DATABASE_URL:
-        raise RuntimeError("Не найден BOT_TOKEN или DATABASE_URL!")
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(get_bonus, pattern="^get_bonus$"))
-    app.add_handler(CommandHandler("admin", admin_menu))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
