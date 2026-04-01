@@ -8,7 +8,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import Forbidden
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -197,7 +196,7 @@ async def admin_callback(update, context):
         if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
         await query.answer(msg or "Активных пользователей нет.", show_alert=True)
     elif data == "broadcast":
-        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": "", "media_type": None}
+        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": None, "media_type": None}
         await query.answer()
         await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
     elif data == "deactivate":
@@ -206,13 +205,14 @@ async def admin_callback(update, context):
         await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Text handler (broadcast + deactivate) с media_type
+# Text handler (broadcast + deactivate) для админов
 # -----------------------------
 async def text_handler(update, context):
     user = update.effective_user
-    if not user: return
+    if not user:
+        return
 
-    # --- Broadcast ---
+    # --- Broadcast (только для админов) ---
     if user.id in broadcast_data:
         data = broadcast_data[user.id]
 
@@ -234,64 +234,66 @@ async def text_handler(update, context):
             await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
             return
 
-        # 4. Медиа без локального хранения
-        if data.get("media_path", "") == "":
+        # 4. Медиа (только админ)
+        if data["media_path"] is None:
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
                 data["media_type"] = None
-            elif update.message.photo:
-                file = await update.message.photo[-1].get_file()
-                data["media_path"] = file.file_id
-                data["media_type"] = "photo"
-            elif update.message.video:
-                file = await update.message.video.get_file()
-                data["media_path"] = file.file_id
-                data["media_type"] = "video"
+            elif user.username in ADMINS:
+                if update.message.photo:
+                    file = await update.message.photo[-1].get_file()
+                    data["media_path"] = file.file_id
+                    data["media_type"] = "photo"
+                elif update.message.video:
+                    file = await update.message.video.get_file()
+                    data["media_path"] = file.file_id
+                    data["media_type"] = "video"
+                else:
+                    await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
+                    return
             else:
-                await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
+                await update.message.reply_text("❌ Только админ может отправлять медиа для рассылки.")
                 return
 
-            # --- Отправка ---
-            keyboard = None
-            if data["button_text"] and data["url"]:
-                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
-            
-            sent_count = 0
-            for record in get_active_subscribers():
-                try:
-                    chat_id = int(record["chat_id"])
-                    if data["media_path"]:
-                        if data["media_type"] == "video":
-                            await context.bot.send_video(
-                                chat_id,
-                                video=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
-                        else:  # photo
-                            await context.bot.send_photo(
-                                chat_id,
-                                photo=data["media_path"],
-                                caption=data["text"],
-                                parse_mode="HTML",
-                                reply_markup=keyboard
-                            )
-                    else:
-                        await context.bot.send_message(
-                            chat_id,
-                            text=data["text"],
-                            parse_mode="HTML",
-                            reply_markup=keyboard
-                        )
-                    sent_count += 1
-                except Exception as e:
-                    logger.warning("Ошибка при отправке рассылки пользователю %s: %s", record["chat_id"], e)
-                    continue
+        # --- Отправка рассылки ---
+        keyboard = None
+        if data["button_text"] and data["url"]:
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
+        
+        sent_count = 0
+        for record in get_active_subscribers():
+            try:
+                chat_id = int(record["chat_id"])
+                if data["media_type"] == "video":
+                    await context.bot.send_video(
+                        chat_id,
+                        video=data["media_path"],
+                        caption=data["text"],
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                elif data["media_type"] == "photo":
+                    await context.bot.send_photo(
+                        chat_id,
+                        photo=data["media_path"],
+                        caption=data["text"],
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id,
+                        text=data["text"],
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                sent_count += 1
+            except Exception:
+                continue
 
-            del broadcast_data[user.id]
-            await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
-            return
+        del broadcast_data[user.id]
+        await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
+        return
 
     # --- Deactivate ---
     if user.id in deactivate_pending:
