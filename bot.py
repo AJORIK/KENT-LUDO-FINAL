@@ -9,7 +9,14 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import Forbidden
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 load_dotenv()
 
@@ -45,6 +52,13 @@ if not VIDEO_PATH.is_absolute():
 
 DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
 DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
+
+# -----------------------------
+# Админы
+# -----------------------------
+ADMINS = ["suerde", "fbtraffick"]  # список username админов без @
+broadcast_pending = {}  # хранит user.id админа, который вводит текст рассылки
+deactivate_pending = {}  # хранит user.id админа, который вводит chat_id для деактивации
 
 # -----------------------------
 # Логирование
@@ -216,6 +230,102 @@ async def daily_check(context: ContextTypes.DEFAULT_TYPE):
         if should_send_now(record, now):
             await send_promo(context.application, int(record["chat_id"]))
 
+# -----------------------------
+# Админ-меню
+# -----------------------------
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.username not in ADMINS:
+        await update.message.reply_text("У вас нет прав для этого меню.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📊 Отправить всем промо", callback_data="send_all")],
+        [InlineKeyboardButton("📋 Статистика пользователей", callback_data="stats")],
+        [InlineKeyboardButton("👥 Список активных подписчиков", callback_data="list_active")],
+        [InlineKeyboardButton("✉️ Создать рассылку", callback_data="broadcast")],
+        [InlineKeyboardButton("❌ Деактивировать пользователя", callback_data="deactivate")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🛠 Админ-меню", reply_markup=markup)
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if not user or user.username not in ADMINS:
+        await query.answer("Нет прав")
+        return
+
+    data = query.data
+    if data == "send_all":
+        for record in get_active_subscribers():
+            await send_promo(context.application, int(record["chat_id"]))
+        await query.answer("Промо отправлено всем!")
+    elif data == "stats":
+        count = len(get_active_subscribers())
+        await query.answer(f"Активных пользователей: {count}", show_alert=True)
+    elif data == "list_active":
+        subscribers = get_active_subscribers()
+        if not subscribers:
+            msg = "Активных пользователей нет."
+        else:
+            msg_lines = []
+            for rec in subscribers[:50]:
+                uname = rec["username"] or "—"
+                msg_lines.append(f"{uname}")
+            msg = "\n".join(msg_lines)
+            if len(subscribers) > 50:
+                msg += f"\n...и еще {len(subscribers)-50} пользователей"
+        await query.answer(msg, show_alert=True)
+    elif data == "broadcast":
+        broadcast_pending[user.id] = True
+        await query.answer()
+        await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
+    elif data == "deactivate":
+        deactivate_pending[user.id] = True
+        await query.answer()
+        await query.message.reply_text("❌ Введите chat_id пользователя, которого нужно деактивировать:")
+
+# -----------------------------
+# Обработка текста рассылки и деактивации
+# -----------------------------
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+
+    # Рассылка
+    if user.id in broadcast_pending:
+        text = update.message.text
+        del broadcast_pending[user.id]
+
+        sent_count = 0
+        for record in get_active_subscribers():
+            try:
+                await context.bot.send_message(chat_id=int(record["chat_id"]), text=text)
+                sent_count += 1
+            except Exception:
+                continue
+
+        await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
+        return
+
+    # Деактивация
+    if user.id in deactivate_pending:
+        chat_id_text = update.message.text.strip()
+        del deactivate_pending[user.id]
+
+        try:
+            chat_id = int(chat_id_text)
+            deactivate(chat_id)
+            await update.message.reply_text(f"✅ Пользователь с chat_id {chat_id} деактивирован.")
+        except ValueError:
+            await update.message.reply_text("❌ Ошибка: chat_id должен быть числом.")
+        return
+
+# -----------------------------
+# Инициализация
+# -----------------------------
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота и открыть кнопку бонуса")])
     existing = application.job_queue.get_jobs_by_name("daily-check")
@@ -238,6 +348,9 @@ def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(get_bonus, pattern="^get_bonus$"))
+    app.add_handler(CommandHandler("admin", admin_menu))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
