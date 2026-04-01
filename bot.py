@@ -2,7 +2,7 @@ import os
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -134,7 +134,8 @@ def build_promo_keyboard():
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat, user = update.effective_chat, update.effective_user
-    if not chat or not user: return
+    if not chat or not user:
+        return
     upsert_chat_db(chat.id, user.username, user.first_name)
     if video_exists():
         await context.bot.send_video(chat.id, VIDEO_PATH, supports_streaming=True)
@@ -149,7 +150,9 @@ async def send_promo(application, chat_id, mark=True):
                                            disable_web_page_preview=True, reply_markup=build_promo_keyboard())
         if mark: mark_sent(chat_id)
         return True
-    except Exception: deactivate(chat_id); return False
+    except Exception:
+        deactivate(chat_id)
+        return False
 
 async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -169,7 +172,8 @@ async def daily_check(context):
 async def admin_menu(update, context):
     user = update.effective_user
     if not user or user.username not in ADMINS:
-        await update.message.reply_text("У вас нет прав для этого меню."); return
+        await update.message.reply_text("У вас нет прав для этого меню.")
+        return
     keyboard = [
         [InlineKeyboardButton("📊 Отправить всем промо", callback_data="send_all")],
         [InlineKeyboardButton("📋 Статистика пользователей", callback_data="stats")],
@@ -182,7 +186,9 @@ async def admin_menu(update, context):
 async def admin_callback(update, context):
     query = update.callback_query
     user = update.effective_user
-    if not user or user.username not in ADMINS: await query.answer("Нет прав"); return
+    if not user or user.username not in ADMINS:
+        await query.answer("Нет прав")
+        return
     data = query.data
     if data == "send_all":
         for record in get_active_subscribers():
@@ -193,67 +199,51 @@ async def admin_callback(update, context):
     elif data == "list_active":
         subscribers = get_active_subscribers()
         msg = "\n".join([r["username"] or "—" for r in subscribers[:50]])
-        if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
+        if len(subscribers) > 50:
+            msg += f"\n...и еще {len(subscribers)-50} пользователей"
         await query.answer(msg or "Активных пользователей нет.", show_alert=True)
     elif data == "broadcast":
-        broadcast_data[user.id] = {"text": "", "button_text": "", "url": "", "media_path": "", "media_type": None}
+        broadcast_data[user.id] = {"message": None, "button_text": "", "url": ""}
         await query.answer()
-        await query.message.reply_text("✉️ Введите текст рассылки для всех пользователей:")
+        await update.message.reply_text("Перешлите боту готовый пост (текст + медиа):")
     elif data == "deactivate":
         deactivate_pending[user.id] = True
         await query.answer()
-        await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
+        await update.message.reply_text("Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Text handler (broadcast + deactivate) с media_type
-# Только для админов, сразу рассылка
+# Новый broadcast: пересланный пост + кнопка
 # -----------------------------
-async def text_handler(update, context):
+async def broadcast_forward_handler(update, context):
     user = update.effective_user
-    if not user:
+    if not user or user.username not in ADMINS:
+        return await update.message.reply_text("❌ Только админ может использовать рассылку.")
+    if user.id not in broadcast_data:
+        return
+    if update.message.forward_from_message_id or update.message.media_group_id or update.message.text or update.message.photo or update.message.video:
+        broadcast_data[user.id]["message"] = update.message
+        await update.message.reply_text("✅ Пост принят. Введите текст кнопки (или оставьте пустым):")
+        return
+    await update.message.reply_text("❌ Нужно переслать готовый пост (текст + медиа).")
+
+# -----------------------------
+# Ввод кнопки и URL + рассылка
+# -----------------------------
+async def broadcast_button_handler(update, context):
+    user = update.effective_user
+    if user.id not in broadcast_data:
         return
 
-    if user.id in broadcast_data:
-        data = broadcast_data[user.id]
+    data = broadcast_data[user.id]
 
-        # 1. Текст
-        if data["text"] == "" and update.message.text:
-            data["text"] = update.message.text
-            await update.message.reply_text("Введите текст кнопки для URL (или оставьте пустым):")
-            return
+    if data["button_text"] == "":
+        data["button_text"] = update.message.text.strip()
+        await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
+        return
 
-        # 2. Название кнопки
-        if data["button_text"] == "" and update.message.text is not None:
-            data["button_text"] = update.message.text.strip()
-            await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
-            return
+    if data["url"] == "":
+        data["url"] = update.message.text.strip()
 
-        # 3. URL
-        if data["url"] == "" and update.message.text is not None:
-            data["url"] = update.message.text.strip()
-            await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
-            return
-
-        # 4. Медиа (только админ)
-        if data["media_path"] == "":
-            if update.message.text and update.message.text.lower() == "нет":
-                data["media_path"] = None
-                data["media_type"] = None
-            elif user.username in ADMINS:
-                if update.message.photo:
-                    data["media_path"] = update.message.photo[-1].file_id
-                    data["media_type"] = "photo"
-                elif update.message.video:
-                    data["media_path"] = update.message.video.file_id
-                    data["media_type"] = "video"
-                else:
-                    await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
-                    return
-            else:
-                await update.message.reply_text("❌ Только админ может отправлять медиа для рассылки.")
-                return
-
-        # --- Отправка рассылки ---
         keyboard = None
         if data["button_text"] and data["url"]:
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
@@ -261,27 +251,36 @@ async def text_handler(update, context):
         sent_count = 0
         for record in get_active_subscribers():
             try:
+                msg = data["message"]
                 chat_id = int(record["chat_id"])
-                if data["media_type"] == "video":
-                    await context.bot.send_video(chat_id, video=data["media_path"],
-                                                 caption=data["text"], parse_mode="HTML",
+                if msg.photo:
+                    await context.bot.send_photo(chat_id,
+                                                 photo=msg.photo[-1].file_id,
+                                                 caption=msg.caption or msg.text or "",
+                                                 parse_mode="HTML",
                                                  reply_markup=keyboard)
-                elif data["media_type"] == "photo":
-                    await context.bot.send_photo(chat_id, photo=data["media_path"],
-                                                 caption=data["text"], parse_mode="HTML",
+                elif msg.video:
+                    await context.bot.send_video(chat_id,
+                                                 video=msg.video.file_id,
+                                                 caption=msg.caption or msg.text or "",
+                                                 parse_mode="HTML",
                                                  reply_markup=keyboard)
                 else:
-                    await context.bot.send_message(chat_id, text=data["text"],
-                                                   parse_mode="HTML", reply_markup=keyboard)
+                    await context.bot.send_message(chat_id,
+                                                   text=msg.text or msg.caption or "",
+                                                   parse_mode="HTML",
+                                                   reply_markup=keyboard)
                 sent_count += 1
             except Exception:
                 continue
-
         del broadcast_data[user.id]
         await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
-        return
 
-    # --- Deactivate ---
+# -----------------------------
+# Deactivate handler
+# -----------------------------
+async def deactivate_handler(update, context):
+    user = update.effective_user
     if user.id in deactivate_pending:
         chat_id_text = update.message.text.strip()
         del deactivate_pending[user.id]
@@ -291,7 +290,6 @@ async def text_handler(update, context):
             await update.message.reply_text(f"✅ Пользователь с chat_id {chat_id} деактивирован.")
         except ValueError:
             await update.message.reply_text("❌ Ошибка: chat_id должен быть числом.")
-        return
 
 # -----------------------------
 # Инициализация и запуск
@@ -313,8 +311,10 @@ def main():
     app.add_handler(CallbackQueryHandler(get_bonus, pattern="^get_bonus$"))
     app.add_handler(CommandHandler("admin", admin_menu))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_handler(MessageHandler(filters.ALL, broadcast_forward_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, deactivate_handler))
+    app.run_polling(allowed_updates=None)
 
 
 if __name__ == "__main__":
