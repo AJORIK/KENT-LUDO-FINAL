@@ -186,7 +186,7 @@ async def admin_menu(update, context):
 async def admin_callback(update, context):
     query = update.callback_query
     user = update.effective_user
-    if not user or user.username not in ADMINS:
+    if not user or user.username not in ADMINS: 
         await query.answer("Нет прав")
         return
     data = query.data
@@ -205,26 +205,27 @@ async def admin_callback(update, context):
     elif data == "broadcast":
         broadcast_data[user.id] = {"message": None, "button_text": "", "url": ""}
         await query.answer()
-        await update.message.reply_text("Перешлите боту готовый пост (текст + медиа):")
+        if query.message:
+            await query.message.reply_text("Перешлите боту готовый пост (текст + медиа):")
     elif data == "deactivate":
         deactivate_pending[user.id] = True
-        await query.answer()
-        await update.message.reply_text("Введите chat_id пользователя для деактивации:")
+        if query.message:
+            await query.message.reply_text("Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Новый broadcast: пересланный пост + кнопка
+# Broadcast: пересланный пост + кнопка
 # -----------------------------
 async def broadcast_forward_handler(update, context):
     user = update.effective_user
     if not user or user.username not in ADMINS:
-        return await update.message.reply_text("❌ Только админ может использовать рассылку.")
+        return
     if user.id not in broadcast_data:
         return
-    if update.message.forward_from_message_id or update.message.media_group_id or update.message.text or update.message.photo or update.message.video:
-        broadcast_data[user.id]["message"] = update.message
-        await update.message.reply_text("✅ Пост принят. Введите текст кнопки (или оставьте пустым):")
+    msg = update.message
+    if msg.text or msg.caption or msg.photo or msg.video or msg.document:
+        broadcast_data[user.id]["message"] = msg
+        await msg.reply_text("✅ Пост принят. Введите текст кнопки (или оставьте пустым):")
         return
-    await update.message.reply_text("❌ Нужно переслать готовый пост (текст + медиа).")
 
 # -----------------------------
 # Ввод кнопки и URL + рассылка
@@ -233,7 +234,6 @@ async def broadcast_button_handler(update, context):
     user = update.effective_user
     if user.id not in broadcast_data:
         return
-
     data = broadcast_data[user.id]
 
     if data["button_text"] == "":
