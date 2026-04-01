@@ -25,13 +25,24 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 TOKEN = os.getenv("BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL")
+VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
+VIDEO_PATH = Path(VIDEO_FILE_NAME)
+if not VIDEO_PATH.is_absolute():
+    VIDEO_PATH = BASE_DIR / VIDEO_PATH
+
 BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
 PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
 PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
 WELCOME_TEXT = "Привет! Добро пожаловать в наш Telegram-бот.\nНажми на кнопку ниже, чтобы получить бонус."
-PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в турбине удачи ✈️</b>
-🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные бонусы 🚀
-✅ <a href="https://lud.su/Jeton">Активируй бонус</a>"""
+
+PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в <a href="https://lud.su/Jeton">турбине удачи JetTon</a> ✈️</b>
+
+🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные денежные бонусы 🚀
+
+✅ <a href="https://lud.su/Jeton">Активируй бонус</a> <b>425% к депам и 250 ФРИСПИНОВ</b> для быстрого старта ⚡️
+
+▶️ <a href="https://lud.su/Jeton">ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ</a> ◀️"""
+
 DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
 DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
 
@@ -74,6 +85,9 @@ with conn.cursor() as cur:
 # -----------------------------
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+def video_exists() -> bool:
+    return VIDEO_PATH.exists() and VIDEO_PATH.is_file()
 
 def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[str]) -> bool:
     with conn.cursor() as cur:
@@ -128,10 +142,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or not user:
         return
     upsert_chat_db(chat.id, user.username, user.first_name)
-    await context.bot.send_message(chat.id, text=WELCOME_TEXT, reply_markup=build_keyboard())
+    # Отправляем видео перед текстом
+    if video_exists():
+        await context.bot.send_video(chat.id, VIDEO_PATH, supports_streaming=True)
+    # Отправляем полный текст промо с кнопками
+    await context.bot.send_message(chat.id, text=PROMO_MESSAGE, parse_mode="HTML",
+                                   disable_web_page_preview=True, reply_markup=build_promo_keyboard())
 
 async def send_promo(application, chat_id, mark=True):
     try:
+        if video_exists():
+            await application.bot.send_video(chat_id, VIDEO_PATH, supports_streaming=True)
         await application.bot.send_message(chat_id, text=PROMO_MESSAGE, parse_mode="HTML",
                                            disable_web_page_preview=True, reply_markup=build_promo_keyboard())
         if mark: mark_sent(chat_id)
@@ -277,10 +298,10 @@ async def deactivate_handler(update, context):
 async def post_init(application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
     existing = application.job_queue.get_jobs_by_name("daily-check")
-    for job in existing: job.schedule_removal()
+    for job in existing:
+        job.schedule_removal()
     application.job_queue.run_repeating(daily_check, interval=timedelta(minutes=DAILY_CHECK_EVERY_MINUTES),
                                         first=timedelta(minutes=1), name="daily-check")
-
 
 def main():
     if not TOKEN or not DATABASE_URL:
@@ -294,7 +315,6 @@ def main():
     app.add_handler(MessageHandler(filters.ALL, broadcast_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, deactivate_handler))
     app.run_polling(allowed_updates=None)
-
 
 if __name__ == "__main__":
     main()
