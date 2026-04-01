@@ -24,11 +24,7 @@ load_dotenv()
 # Настройки
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "tmp_media"
-MEDIA_DIR.mkdir(exist_ok=True)
-
 TOKEN = os.getenv("BOT_TOKEN", "")
-BOT_NAME = os.getenv("BOT_NAME", "Bonus Bot")
 DATABASE_URL = os.getenv("DATABASE_URL")
 VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
 VIDEO_PATH = Path(VIDEO_FILE_NAME)
@@ -210,7 +206,7 @@ async def admin_callback(update, context):
         await query.message.reply_text("❌ Введите chat_id пользователя для деактивации:")
 
 # -----------------------------
-# Text handler (broadcast + deactivate)
+# Text handler (broadcast + deactivate) с поддержкой медиа без сохранения
 # -----------------------------
 async def text_handler(update, context):
     user = update.effective_user
@@ -220,7 +216,7 @@ async def text_handler(update, context):
     if user.id in broadcast_data:
         data = broadcast_data[user.id]
 
-        # 1. Текст рассылки
+        # 1. Текст
         if data["text"] == "" and update.message.text:
             data["text"] = update.message.text
             await update.message.reply_text("Введите текст кнопки для URL (или оставьте пустым):")
@@ -232,42 +228,38 @@ async def text_handler(update, context):
             await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
             return
 
-        # 3. URL кнопки
+        # 3. URL
         if data["url"] == "" and update.message.text is not None:
             data["url"] = update.message.text.strip()
             await update.message.reply_text("Отправьте медиа (фото/видео) или напишите 'нет':")
             return
 
-        # 4. Медиа
+        # 4. Медиа без локального сохранения
         if data["media_path"] == "":
             if update.message.text and update.message.text.lower() == "нет":
                 data["media_path"] = None
             elif update.message.photo:
                 file = await update.message.photo[-1].get_file()
-                path = MEDIA_DIR / f"{file.file_id}.jpg"
-                path.parent.mkdir(exist_ok=True)
-                await file.download_to_drive(str(path))
-                data["media_path"] = str(path)
+                data["media_path"] = file.file_id
             elif update.message.video:
                 file = await update.message.video.get_file()
-                path = MEDIA_DIR / f"{file.file_id}.mp4"
-                path.parent.mkdir(exist_ok=True)
-                await file.download_to_drive(str(path))
-                data["media_path"] = str(path)
+                data["media_path"] = file.file_id
             else:
                 await update.message.reply_text("❌ Неверный формат. Отправьте фото, видео или 'нет'.")
                 return
 
-            # Отправка рассылки
+            # --- Отправка ---
             keyboard = None
             if data["button_text"] and data["url"]:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
+            
             sent_count = 0
             for record in get_active_subscribers():
                 try:
                     chat_id = int(record["chat_id"])
                     if data["media_path"]:
-                        if data["media_path"].lower().endswith((".mp4", ".mov", ".mkv")):
+                        # проверка на видео
+                        if update.message.video or str(data["media_path"]).endswith((".mp4",".mov",".mkv")):
                             await context.bot.send_video(chat_id,
                                                          video=data["media_path"],
                                                          caption=data["text"],
@@ -288,6 +280,7 @@ async def text_handler(update, context):
                 except Exception as e:
                     logger.warning("Ошибка при отправке рассылки пользователю %s: %s", record["chat_id"], e)
                     continue
+
             del broadcast_data[user.id]
             await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
             return
