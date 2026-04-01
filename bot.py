@@ -25,11 +25,6 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 TOKEN = os.getenv("BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL")
-VIDEO_FILE_NAME = os.getenv("VIDEO_FILE", "promo.mp4")
-VIDEO_PATH = Path(VIDEO_FILE_NAME)
-if not VIDEO_PATH.is_absolute():
-    VIDEO_PATH = BASE_DIR / VIDEO_PATH
-
 BUTTON_TEXT = os.getenv("BUTTON_TEXT", "Получить бонус!")
 PROMO_BUTTON_TEXT = os.getenv("PROMO_BUTTON_TEXT", "ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ")
 PROMO_URL = os.getenv("PROMO_URL", "https://lud.su/Jeton")
@@ -37,7 +32,6 @@ WELCOME_TEXT = "Привет! Добро пожаловать в наш Telegram
 PROMO_MESSAGE = """<b>🎡 Тебе доступно одно <u>БЕСПЛАТНОЕ</u> вращение в турбине удачи ✈️</b>
 🎁 Крути турбину <b>ЕЖЕДНЕВНО</b> и получай реальные бонусы 🚀
 ✅ <a href="https://lud.su/Jeton">Активируй бонус</a>"""
-
 DAILY_INTERVAL_HOURS = int(os.getenv("DAILY_INTERVAL_HOURS", "24"))
 DAILY_CHECK_EVERY_MINUTES = int(os.getenv("DAILY_CHECK_EVERY_MINUTES", "10"))
 
@@ -80,9 +74,6 @@ with conn.cursor() as cur:
 # -----------------------------
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-def video_exists() -> bool:
-    return VIDEO_PATH.exists() and VIDEO_PATH.is_file()
 
 def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[str]) -> bool:
     with conn.cursor() as cur:
@@ -137,15 +128,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or not user:
         return
     upsert_chat_db(chat.id, user.username, user.first_name)
-    if video_exists():
-        await context.bot.send_video(chat.id, VIDEO_PATH, supports_streaming=True)
-    await context.bot.send_message(chat.id, text=PROMO_MESSAGE, parse_mode="HTML",
-                                   disable_web_page_preview=True, reply_markup=build_promo_keyboard())
+    await context.bot.send_message(chat.id, text=WELCOME_TEXT, reply_markup=build_keyboard())
 
 async def send_promo(application, chat_id, mark=True):
     try:
-        if video_exists():
-            await application.bot.send_video(chat_id, VIDEO_PATH, supports_streaming=True)
         await application.bot.send_message(chat_id, text=PROMO_MESSAGE, parse_mode="HTML",
                                            disable_web_page_preview=True, reply_markup=build_promo_keyboard())
         if mark: mark_sent(chat_id)
@@ -167,12 +153,12 @@ async def daily_check(context):
             await send_promo(context.application, int(record["chat_id"]))
 
 # -----------------------------
-# Admin menu & callback
+# Админ-панель
 # -----------------------------
 async def admin_menu(update, context):
     user = update.effective_user
     if not user or user.username not in ADMINS:
-        await update.message.reply_text("У вас нет прав для этого меню.")
+        await update.message.reply_text("У вас нет прав")
         return
     keyboard = [
         [InlineKeyboardButton("📊 Отправить всем промо", callback_data="send_all")],
@@ -199,11 +185,10 @@ async def admin_callback(update, context):
     elif data == "list_active":
         subscribers = get_active_subscribers()
         msg = "\n".join([r["username"] or "—" for r in subscribers[:50]])
-        if len(subscribers) > 50:
-            msg += f"\n...и еще {len(subscribers)-50} пользователей"
+        if len(subscribers) > 50: msg += f"\n...и еще {len(subscribers)-50} пользователей"
         await query.answer(msg or "Активных пользователей нет.", show_alert=True)
     elif data == "broadcast":
-        broadcast_data[user.id] = {"message": None, "button_text": "", "url": ""}
+        broadcast_data[user.id] = {"message": None, "button_text": None, "url": None, "step":"await_post"}
         await query.answer()
         if query.message:
             await query.message.reply_text("Перешлите боту готовый пост (текст + медиа):")
@@ -215,61 +200,56 @@ async def admin_callback(update, context):
 # -----------------------------
 # Broadcast: пересланный пост + кнопка
 # -----------------------------
-async def broadcast_forward_handler(update, context):
+async def broadcast_handler(update, context):
     user = update.effective_user
     if not user or user.username not in ADMINS:
         return
     if user.id not in broadcast_data:
         return
-    msg = update.message
-    if msg.text or msg.caption or msg.photo or msg.video or msg.document:
-        broadcast_data[user.id]["message"] = msg
-        await msg.reply_text("✅ Пост принят. Введите текст кнопки (или оставьте пустым):")
-        return
-
-# -----------------------------
-# Ввод кнопки и URL + рассылка
-# -----------------------------
-async def broadcast_button_handler(update, context):
-    user = update.effective_user
-    if user.id not in broadcast_data:
-        return
     data = broadcast_data[user.id]
 
-    if data["button_text"] == "":
+    # Шаг 1: ожидание пересланного поста
+    if data["step"] == "await_post":
+        msg = update.message
+        if msg.text or msg.caption or msg.photo or msg.video or msg.document:
+            data["message"] = msg
+            data["step"] = "await_button_text"
+            await msg.reply_text("✅ Пост принят. Введите текст кнопки (или оставьте пустым):")
+        return
+
+    # Шаг 2: текст кнопки
+    if data["step"] == "await_button_text":
         data["button_text"] = update.message.text.strip()
+        data["step"] = "await_url"
         await update.message.reply_text("Введите URL для кнопки (или оставьте пустым):")
         return
 
-    if data["url"] == "":
+    # Шаг 3: URL
+    if data["step"] == "await_url":
         data["url"] = update.message.text.strip()
+        data["step"] = "ready_to_send"
 
         keyboard = None
         if data["button_text"] and data["url"]:
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(data["button_text"], url=data["url"])]])
         
+        # Отправка всем подписчикам
         sent_count = 0
         for record in get_active_subscribers():
             try:
                 msg = data["message"]
                 chat_id = int(record["chat_id"])
                 if msg.photo:
-                    await context.bot.send_photo(chat_id,
-                                                 photo=msg.photo[-1].file_id,
+                    await context.bot.send_photo(chat_id, photo=msg.photo[-1].file_id,
                                                  caption=msg.caption or msg.text or "",
-                                                 parse_mode="HTML",
-                                                 reply_markup=keyboard)
+                                                 parse_mode="HTML", reply_markup=keyboard)
                 elif msg.video:
-                    await context.bot.send_video(chat_id,
-                                                 video=msg.video.file_id,
+                    await context.bot.send_video(chat_id, video=msg.video.file_id,
                                                  caption=msg.caption or msg.text or "",
-                                                 parse_mode="HTML",
-                                                 reply_markup=keyboard)
+                                                 parse_mode="HTML", reply_markup=keyboard)
                 else:
-                    await context.bot.send_message(chat_id,
-                                                   text=msg.text or msg.caption or "",
-                                                   parse_mode="HTML",
-                                                   reply_markup=keyboard)
+                    await context.bot.send_message(chat_id, text=msg.text or msg.caption or "",
+                                                   parse_mode="HTML", reply_markup=keyboard)
                 sent_count += 1
             except Exception:
                 continue
@@ -277,7 +257,7 @@ async def broadcast_button_handler(update, context):
         await update.message.reply_text(f"✅ Рассылка отправлена {sent_count} пользователям.")
 
 # -----------------------------
-# Deactivate handler
+# Deactivate
 # -----------------------------
 async def deactivate_handler(update, context):
     user = update.effective_user
@@ -297,8 +277,7 @@ async def deactivate_handler(update, context):
 async def post_init(application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
     existing = application.job_queue.get_jobs_by_name("daily-check")
-    for job in existing:
-        job.schedule_removal()
+    for job in existing: job.schedule_removal()
     application.job_queue.run_repeating(daily_check, interval=timedelta(minutes=DAILY_CHECK_EVERY_MINUTES),
                                         first=timedelta(minutes=1), name="daily-check")
 
@@ -310,9 +289,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(get_bonus, pattern="^get_bonus$"))
     app.add_handler(CommandHandler("admin", admin_menu))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
-    app.add_handler(MessageHandler(filters.ALL, broadcast_forward_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_button_handler))
+    app.add_handler(CallbackQueryHandler(admin_callback,
+                                         pattern="^(send_all|stats|list_active|broadcast|deactivate)$"))
+    app.add_handler(MessageHandler(filters.ALL, broadcast_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, deactivate_handler))
     app.run_polling(allowed_updates=None)
 
