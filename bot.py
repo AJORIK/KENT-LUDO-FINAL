@@ -54,6 +54,7 @@ PROMO_BUTTON_TEXT_2 = "Активировать промокод"
 PROMO_URL_2 = "https://barryvpn.site/FNdssZ"
 
 ADMINS = ["suerde", "fbtraffick"]
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -168,12 +169,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     upsert_chat_db(chat.id, user.username, user.first_name)
 
+    # Отправляем оба промо
     await send_single_promo(context.application, chat.id, PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
     await send_single_promo(context.application, chat.id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
 
 
 # -----------------------------
-# Админ-панель и рассылки
+# Остальной старый код админских команд
 # -----------------------------
 async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -230,34 +232,19 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}")
 
     # Остальные админские команды: stats, list_active, broadcast, deactivate
-    # можно вставить как было в старом коде
+    # Всё как в старом коде
 
-# -----------------------------
-# Инициализация бота
-# -----------------------------
-async def post_init(application: Application):
-    await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
 
-def main():
-    if not TOKEN:
-        raise RuntimeError("Не найден BOT_TOKEN!")
+async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    if not user or not msg or not is_admin(user.username):
+        return
 
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(get_bonus, pattern=r"^get_bonus$"))
-    app.add_handler(CommandHandler("admin", admin_menu))
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_callback,
-            pattern=r"^(send_all|stats|list_active|broadcast|deactivate)$",
-        )
-    )
-    # Админские текстовые сценарии (deactivate, broadcast)
-    # app.add_handler(MessageHandler(~filters.COMMAND, admin_state_router))
-
-    logger.info("Бот запущен")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+    # Деактивация пользователя
+    if user.id in deactivate_pending:
+        deactivate_pending.discard(user.id)
+        try:
+            chat_id = int((msg.text or "").strip())
+            deactivate(chat_id)
+            await msg.reply_text(f"✅ Пользователь с chat_id
