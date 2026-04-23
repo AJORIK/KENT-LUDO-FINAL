@@ -247,4 +247,121 @@ async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             chat_id = int((msg.text or "").strip())
             deactivate(chat_id)
-            await msg.reply_text(f"✅ Пользователь с chat_id
+            await msg.reply_text(f"✅ Пользователь с chat_id {chat_id} деактивирован.")
+        except ValueError:
+            await msg.reply_text("❌ Ошибка: chat_id должен быть числом.")
+        return
+
+    # Расслыка
+    if user.id not in broadcast_data:
+        return
+
+    data = broadcast_data[user.id]
+    step = data.get("step")
+
+    if step == "await_post":
+        if msg.text or msg.caption or msg.photo or msg.video or msg.document:
+            data["message"] = msg
+            data["step"] = "await_button_text"
+            await msg.reply_text(
+                "✅ Пост принят. Введите текст кнопки или отправьте /skip, если кнопка не нужна."
+            )
+        else:
+            await msg.reply_text("❌ Нужен текст, фото, видео или документ.")
+        return
+
+    if step == "await_button_text":
+        text = (msg.text or "").strip()
+        data["button_text"] = "" if text == "/skip" else text
+        data["step"] = "await_url"
+        await msg.reply_text("Введите URL для кнопки или отправьте /skip")
+        return
+
+    if step == "await_url":
+        text = (msg.text or "").strip()
+        data["url"] = "" if text == "/skip" else text
+
+        keyboard = None
+        if data["button_text"] and data["url"]:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(data["button_text"], url=data["url"])]]
+            )
+
+        sent_count = 0
+        failed_count = 0
+        original_msg = data["message"]
+
+        for record in get_active_subscribers():
+            chat_id = int(record["chat_id"])
+            try:
+                if original_msg.photo:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=original_msg.photo[-1].file_id,
+                        caption=original_msg.caption or "",
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+                elif original_msg.video:
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=original_msg.video.file_id,
+                        caption=original_msg.caption or "",
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+                elif original_msg.document:
+                    await context.bot.send_document(
+                        chat_id=chat_id,
+                        document=original_msg.document.file_id,
+                        caption=original_msg.caption or "",
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=original_msg.text or "",
+                        parse_mode="HTML",
+                        disable_web_page_preview=False,
+                        reply_markup=keyboard,
+                    )
+                sent_count += 1
+            except Exception as exc:
+                logger.warning("Ошибка рассылки chat_id=%s: %s", chat_id, exc)
+                failed_count += 1
+
+        del broadcast_data[user.id]
+        await msg.reply_text(
+            f"✅ Рассылка завершена.\nОтправлено: {sent_count}\nНе доставлено: {failed_count}"
+        )
+        return
+
+
+async def post_init(application: Application):
+    await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
+
+
+def main():
+    if not TOKEN:
+        raise RuntimeError("Не найден BOT_TOKEN!")
+
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(get_bonus, pattern=r"^get_bonus$"))
+    app.add_handler(CommandHandler("admin", admin_menu))
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_callback,
+            pattern=r"^(send_all|stats|list_active|broadcast|deactivate)$",
+        )
+    )
+    app.add_handler(MessageHandler(~filters.COMMAND, admin_state_router))
+
+    logger.info("Бот запущен")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
