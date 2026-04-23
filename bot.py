@@ -168,37 +168,96 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     upsert_chat_db(chat.id, user.username, user.first_name)
 
-    # Отправляем оба промо
     await send_single_promo(context.application, chat.id, PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
     await send_single_promo(context.application, chat.id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
 
 
 # -----------------------------
-# Остальной старый код админских команд, рассылок, деактиваций
+# Админ-панель и рассылки
 # -----------------------------
-# get_bonus, admin_menu, admin_callback, admin_state_router
-# Всё осталось без изменений
+async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.message:
+        return
+    await query.answer()
+    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
+    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
 
 
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not user or not message:
+        return
+    if not is_admin(user.username):
+        await message.reply_text("У вас нет прав")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📊 Отправить всем промо", callback_data="send_all")],
+        [InlineKeyboardButton("📋 Статистика пользователей", callback_data="stats")],
+        [InlineKeyboardButton("👥 Список активных подписчиков", callback_data="list_active")],
+        [InlineKeyboardButton("✉️ Создать рассылку", callback_data="broadcast")],
+        [InlineKeyboardButton("❌ Деактивировать пользователя", callback_data="deactivate")],
+    ]
+    await message.reply_text("🛠 Админ-меню", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+
+    if not is_admin(user.username):
+        await query.answer("Нет прав", show_alert=True)
+        return
+
+    data = query.data
+
+    if data == "send_all":
+        await query.answer("Начинаю рассылку...")
+        sent = 0
+        failed = 0
+        for record in get_active_subscribers():
+            ok1 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
+            ok2 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
+            if ok1 and ok2:
+                sent += 1
+            else:
+                failed += 1
+        if query.message:
+            await query.message.reply_text(f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}")
+
+    # Остальные админские команды: stats, list_active, broadcast, deactivate
+    # можно вставить как было в старом коде
+
+# -----------------------------
+# Инициализация бота
+# -----------------------------
 async def post_init(application: Application):
     await application.bot.set_my_commands([BotCommand("start", "Запустить бота")])
-
 
 def main():
     if not TOKEN:
         raise RuntimeError("Не найден BOT_TOKEN!")
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+
     app.add_handler(CommandHandler("start", start))
-    # Остальные старые хендлеры:
-    # app.add_handler(CallbackQueryHandler(get_bonus, pattern=r"^get_bonus$"))
-    # app.add_handler(CommandHandler("admin", admin_menu))
-    # app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^(send_all|stats|list_active|broadcast|deactivate)$"))
+    app.add_handler(CallbackQueryHandler(get_bonus, pattern=r"^get_bonus$"))
+    app.add_handler(CommandHandler("admin", admin_menu))
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_callback,
+            pattern=r"^(send_all|stats|list_active|broadcast|deactivate)$",
+        )
+    )
+    # Админские текстовые сценарии (deactivate, broadcast)
     # app.add_handler(MessageHandler(~filters.COMMAND, admin_state_router))
 
     logger.info("Бот запущен")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
