@@ -231,8 +231,52 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.message:
             await query.message.reply_text(f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}")
 
-    # Остальные админские команды: stats, list_active, broadcast, deactivate
-    # Всё как в старом коде
+    elif data == "stats":
+        total_active = len(get_active_subscribers())
+        await query.answer()
+        if query.message:
+            await query.message.reply_text(f"📋 Активных пользователей: {total_active}")
+
+    elif data == "list_active":
+        subscribers = get_active_subscribers()
+        names = []
+        for row in subscribers[:50]:
+            username = row.get("username")
+            first_name = row.get("first_name")
+            chat_id = row.get("chat_id")
+            if username:
+                names.append(f"@{username} — {chat_id}")
+            elif first_name:
+                names.append(f"{first_name} — {chat_id}")
+            else:
+                names.append(str(chat_id))
+
+        text = "👥 Активные подписчики:\n\n" + ("\n".join(names) if names else "Список пуст.")
+        if len(subscribers) > 50:
+            text += f"\n\n...и ещё {len(subscribers) - 50} пользователей"
+
+        await query.answer()
+        if query.message:
+            await query.message.reply_text(text)
+
+    elif data == "broadcast":
+        broadcast_data[user.id] = {
+            "message": None,
+            "button_text": None,
+            "url": None,
+            "step": "await_post",
+        }
+        await query.answer()
+        if query.message:
+            await query.message.reply_text(
+                "Перешлите боту готовый пост (текст / фото / видео / документ)."
+            )
+
+    elif data == "deactivate":
+        deactivate_pending.add(user.id)
+        await query.answer()
+        if query.message:
+            await query.message.reply_text("Введите chat_id пользователя для деактивации:")
 
 
 async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
