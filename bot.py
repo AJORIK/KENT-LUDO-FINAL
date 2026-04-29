@@ -28,11 +28,16 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 # -----------------------------
 # Промо 1
 # -----------------------------
-PROMO_MESSAGE_1 = f"""Есть Telegram? Тогда у тебя уже есть +20FS 😉
-Привяжи аккаунт и забирай бонус прямо сейчас."""
-PHOTO_PATH_1 = BASE_DIR / "promo.jpg"
+PROMO_MESSAGE_1 = """🎡 Тебе доступно одно БЕСПЛАТНОЕ вращение в турбине удачи JetTon (https://lud.su/Jeton) ✈️
+
+🎁 Крути турбину ЕЖЕДНЕВНО и получай реальные денежные бонусы 🚀
+
+✅ Активируй бонус (https://lud.su/Jeton) 425% к депам и 250 ФРИСПИНОВ для быстрого старта ⚡️
+
+▶️ ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ (https://lud.su/Jeton) ◀️"""
+VIDEO_PATH_1 = BASE_DIR / "promo.mp4"  # Обновляем путь на новое видео (если оно есть)
 PROMO_BUTTON_TEXT_1 = "Забрать бонус"
-PROMO_URL_1 = "https://barryvpn.site/HTb1cF"
+PROMO_URL_1 = "https://lud.su/Jeton"
 
 # -----------------------------
 # Промо 2
@@ -130,17 +135,26 @@ def build_single_promo_keyboard(button_text: str, url: str) -> InlineKeyboardMar
     return InlineKeyboardMarkup([[InlineKeyboardButton(button_text, url=url)]])
 
 
-async def send_single_promo(application: Application, chat_id: int, message: str, photo_path: Path, button_text: str, url: str) -> bool:
+async def send_single_promo(application: Application, chat_id: int, message: str, media_path: Path, button_text: str, url: str) -> bool:
     try:
         keyboard = build_single_promo_keyboard(button_text, url)
-        if photo_exists(photo_path):
-            await application.bot.send_photo(
-                chat_id=chat_id,
-                photo=photo_path,
-                caption=message,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
+        if media_path.exists() and media_path.is_file():
+            if media_path.suffix == '.mp4':  # Проверяем, если это видео
+                await application.bot.send_video(
+                    chat_id=chat_id,
+                    video=media_path,
+                    caption=message,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            else:
+                await application.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=media_path,
+                    caption=message,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
         else:
             await application.bot.send_message(
                 chat_id=chat_id,
@@ -170,7 +184,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_chat_db(chat.id, user.username, user.first_name)
 
     # Отправляем оба промо
-    await send_single_promo(context.application, chat.id, PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
+    await send_single_promo(context.application, chat.id, PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
     await send_single_promo(context.application, chat.id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
 
 
@@ -182,7 +196,7 @@ async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query or not query.message:
         return
     await query.answer()
-    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
+    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
     await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
 
 
@@ -222,7 +236,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent = 0
         failed = 0
         for record in get_active_subscribers():
-            ok1 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_1, PHOTO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
+            ok1 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
             ok2 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
             if ok1 and ok2:
                 sent += 1
