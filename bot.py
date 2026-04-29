@@ -28,14 +28,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 # -----------------------------
 # Промо 1
 # -----------------------------
-PROMO_MESSAGE_1 = """🎡 Тебе доступно одно БЕСПЛАТНОЕ вращение в турбине удачи JetTon (https://lud.su/Jeton) ✈️
+PROMO_MESSAGE_1 = """🎡 Тебе доступно одно БЕСПЛАТНОЕ вращение в турбине удачи JetTon <a href="https://lud.su/Jeton">✈️</a>
 
 🎁 Крути турбину ЕЖЕДНЕВНО и получай реальные денежные бонусы 🚀
 
-✅ Активируй бонус (https://lud.su/Jeton) 425% к депам и 250 ФРИСПИНОВ для быстрого старта ⚡️
+✅ Активируй бонус <a href="https://lud.su/Jeton">425% к депам и 250 ФРИСПИНОВ для быстрого старта ⚡️</a>
 
-▶️ ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ (https://lud.su/Jeton) ◀️"""
-VIDEO_PATH_1 = BASE_DIR / "promo.mp4"  # Обновляем путь на новое видео (если оно есть)
+▶️ ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ <a href="https://lud.su/Jeton">◀️</a>"""
+VIDEO_PATH_1 = BASE_DIR / "promo.mp4"  # Обновляем путь на новое видео
 PROMO_BUTTON_TEXT_1 = "Забрать бонус"
 PROMO_URL_1 = "https://lud.su/Jeton"
 
@@ -138,23 +138,14 @@ def build_single_promo_keyboard(button_text: str, url: str) -> InlineKeyboardMar
 async def send_single_promo(application: Application, chat_id: int, message: str, media_path: Path, button_text: str, url: str) -> bool:
     try:
         keyboard = build_single_promo_keyboard(button_text, url)
-        if media_path.exists() and media_path.is_file():
-            if media_path.suffix == '.mp4':  # Проверяем, если это видео
-                await application.bot.send_video(
-                    chat_id=chat_id,
-                    video=media_path,
-                    caption=message,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
-            else:
-                await application.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=media_path,
-                    caption=message,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
+        if photo_exists(media_path):
+            await application.bot.send_video(
+                chat_id=chat_id,
+                video=media_path,
+                caption=message,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
         else:
             await application.bot.send_message(
                 chat_id=chat_id,
