@@ -1,6 +1,6 @@
+import asyncio
 import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 import psycopg2
@@ -21,42 +21,19 @@ load_dotenv()
 # -----------------------------
 # Настройки
 # -----------------------------
-BASE_DIR = Path(__file__).resolve().parent
 TOKEN = os.getenv("BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # -----------------------------
-# Промо 1
+# Сообщения после /start
 # -----------------------------
-PROMO_MESSAGE_1 = """🎡 Тебе доступно одно БЕСПЛАТНОЕ вращение в турбине удачи JetTon <a href="https://lud.su/Jeton">✈️</a>
+PROMO_MESSAGE_1 = """Sizning arizangiz navbatda 1-raqamda"""
 
-🎁 Крути турбину ЕЖЕДНЕВНО и получай реальные денежные бонусы 🚀
+PROMO_MESSAGE_2 = """Кредит шартларини билиш ва аризангизни кўриб чиқиш жараёнини бошлаш учун менеджерга мурожаат қилинг:
 
-✅ Активируй бонус <a href="https://lud.su/Jeton">425% к депам и 250 ФРИСПИНОВ для быстрого старта ⚡️</a>
+@MuhlisaImonKredit"""
 
-▶️ ЖМИ И КРУТИ КАЖДЫЙ ДЕНЬ <a href="https://lud.su/Jeton">◀️</a>"""
-VIDEO_PATH_1 = BASE_DIR / "promo.mp4"  # Обновляем путь на новое видео
-PROMO_BUTTON_TEXT_1 = "Забрать бонус"
-PROMO_URL_1 = "https://lud.su/Jeton"
-
-# -----------------------------
-# Промо 2
-# -----------------------------
-PROMO_MESSAGE_2 = f"""💰ПРОМОКОД💰
-
-Ваш еженедельный приз уже здесь! 100 фриспинов в Samarkand's Gold от Endorphina ждут вас!
-
-Промокод: 1XGOLDFS
-
-Условия:
-
-1. Количество активаций ограничено, поторопитесь!
-2. Промокод можно активировать только один раз для каждого аккаунта
-3. Вводите его в разделе "Бонусы"
-"""
-PHOTO_PATH_2 = BASE_DIR / "promo2.jpg"
-PROMO_BUTTON_TEXT_2 = "Активировать промокод"
-PROMO_URL_2 = "https://barryvpn.site/FNdssZ"
+PROMO_DELAY_SECONDS = 60
 
 ADMINS = ["suerde", "fbtraffick"]
 
@@ -95,10 +72,6 @@ with conn.cursor() as cur:
 # -----------------------------
 # Вспомогательные функции
 # -----------------------------
-def photo_exists(photo_path: Path) -> bool:
-    return photo_path.exists() and photo_path.is_file()
-
-
 def upsert_chat_db(chat_id: int, username: Optional[str], first_name: Optional[str]) -> bool:
     with conn.cursor() as cur:
         cur.execute(
@@ -131,71 +104,65 @@ def deactivate(chat_id: int):
         conn.commit()
 
 
-def build_single_promo_keyboard(button_text: str, url: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(button_text, url=url)]])
-
-
-async def send_single_promo(application: Application, chat_id: int, message: str, media_path: Path, button_text: str, url: str) -> bool:
-    try:
-        keyboard = build_single_promo_keyboard(button_text, url)
-        if photo_exists(media_path):
-            await application.bot.send_video(
-                chat_id=chat_id,
-                video=media_path,
-                caption=message,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        else:
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                reply_markup=keyboard,
-            )
-        return True
-    except Exception as exc:
-        logger.warning("Не удалось отправить промо chat_id=%s: %s", chat_id, exc)
-        deactivate(chat_id)
-        return False
-
-
 def is_admin(username: Optional[str]) -> bool:
     return bool(username and username in ADMINS)
 
 
+async def send_promo_message(application: Application, chat_id: int, message: str) -> bool:
+    try:
+        await application.bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Не удалось отправить сообщение chat_id=%s: %s", chat_id, exc)
+        deactivate(chat_id)
+        return False
+
+
+async def send_second_promo_after_delay(application: Application, chat_id: int):
+    await asyncio.sleep(PROMO_DELAY_SECONDS)
+    await send_promo_message(application, chat_id, PROMO_MESSAGE_2)
+
+
 # -----------------------------
-# Основная отправка промо при /start
+# /start
 # -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat, user = update.effective_chat, update.effective_user
+    chat = update.effective_chat
+    user = update.effective_user
+
     if not chat or not user:
         return
+
     upsert_chat_db(chat.id, user.username, user.first_name)
 
-    # Отправляем оба промо
-    await send_single_promo(context.application, chat.id, PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
-    await send_single_promo(context.application, chat.id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
-
-
-# -----------------------------
-# Остальной старый код админских команд
-# -----------------------------
-async def get_bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or not query.message:
+    # Первое сообщение — сразу.
+    sent = await send_promo_message(context.application, chat.id, PROMO_MESSAGE_1)
+    if not sent:
         return
-    await query.answer()
-    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
-    await send_single_promo(context.application, query.message.chat_id, PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
+
+    # Второе сообщение — через 1 минуту.
+    # Создаём отдельную задачу, чтобы бот не зависал на sleep и продолжал отвечать другим пользователям.
+    context.application.create_task(
+        send_second_promo_after_delay(context.application, chat.id),
+        update=update,
+        name=f"promo2_{chat.id}",
+    )
 
 
+# -----------------------------
+# Админ-меню
+# -----------------------------
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
+
     if not user or not message:
         return
+
     if not is_admin(user.username):
         await message.reply_text("У вас нет прав")
         return
@@ -207,12 +174,14 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✉️ Создать рассылку", callback_data="broadcast")],
         [InlineKeyboardButton("❌ Деактивировать пользователя", callback_data="deactivate")],
     ]
+
     await message.reply_text("🛠 Админ-меню", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
+
     if not query or not user:
         return
 
@@ -224,31 +193,53 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "send_all":
         await query.answer("Начинаю рассылку...")
-        sent = 0
-        failed = 0
-        for record in get_active_subscribers():
-            ok1 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_1, VIDEO_PATH_1, PROMO_BUTTON_TEXT_1, PROMO_URL_1)
-            ok2 = await send_single_promo(context.application, int(record["chat_id"]), PROMO_MESSAGE_2, PHOTO_PATH_2, PROMO_BUTTON_TEXT_2, PROMO_URL_2)
-            if ok1 and ok2:
-                sent += 1
+
+        subscribers = get_active_subscribers()
+        first_sent_chat_ids = []
+        failed_chat_ids = set()
+
+        # Первое сообщение всем активным пользователям.
+        for record in subscribers:
+            chat_id = int(record["chat_id"])
+            ok = await send_promo_message(context.application, chat_id, PROMO_MESSAGE_1)
+            if ok:
+                first_sent_chat_ids.append(chat_id)
             else:
-                failed += 1
+                failed_chat_ids.add(chat_id)
+
+        # Второе сообщение через минуту.
+        if first_sent_chat_ids:
+            await asyncio.sleep(PROMO_DELAY_SECONDS)
+
+            for chat_id in first_sent_chat_ids:
+                ok = await send_promo_message(context.application, chat_id, PROMO_MESSAGE_2)
+                if not ok:
+                    failed_chat_ids.add(chat_id)
+
+        sent = len(subscribers) - len(failed_chat_ids)
+        failed = len(failed_chat_ids)
+
         if query.message:
-            await query.message.reply_text(f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}")
+            await query.message.reply_text(
+                f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}"
+            )
 
     elif data == "stats":
         total_active = len(get_active_subscribers())
         await query.answer()
+
         if query.message:
             await query.message.reply_text(f"📋 Активных пользователей: {total_active}")
 
     elif data == "list_active":
         subscribers = get_active_subscribers()
         names = []
+
         for row in subscribers[:50]:
             username = row.get("username")
             first_name = row.get("first_name")
             chat_id = row.get("chat_id")
+
             if username:
                 names.append(f"@{username} — {chat_id}")
             elif first_name:
@@ -257,10 +248,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 names.append(str(chat_id))
 
         text = "👥 Активные подписчики:\n\n" + ("\n".join(names) if names else "Список пуст.")
+
         if len(subscribers) > 50:
             text += f"\n\n...и ещё {len(subscribers) - 50} пользователей"
 
         await query.answer()
+
         if query.message:
             await query.message.reply_text(text)
 
@@ -271,7 +264,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "url": None,
             "step": "await_post",
         }
+
         await query.answer()
+
         if query.message:
             await query.message.reply_text(
                 "Перешлите боту готовый пост (текст / фото / видео / документ)."
@@ -280,6 +275,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "deactivate":
         deactivate_pending.add(user.id)
         await query.answer()
+
         if query.message:
             await query.message.reply_text("Введите chat_id пользователя для деактивации:")
 
@@ -287,21 +283,24 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.message
+
     if not user or not msg or not is_admin(user.username):
         return
 
-    # Деактивация пользователя
+    # Деактивация пользователя.
     if user.id in deactivate_pending:
         deactivate_pending.discard(user.id)
+
         try:
             chat_id = int((msg.text or "").strip())
             deactivate(chat_id)
             await msg.reply_text(f"✅ Пользователь с chat_id {chat_id} деактивирован.")
         except ValueError:
             await msg.reply_text("❌ Ошибка: chat_id должен быть числом.")
+
         return
 
-    # Расслыка
+    # Обычная админская рассылка.
     if user.id not in broadcast_data:
         return
 
@@ -317,6 +316,7 @@ async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         else:
             await msg.reply_text("❌ Нужен текст, фото, видео или документ.")
+
         return
 
     if step == "await_button_text":
@@ -342,6 +342,7 @@ async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         for record in get_active_subscribers():
             chat_id = int(record["chat_id"])
+
             try:
                 if original_msg.photo:
                     await context.bot.send_photo(
@@ -375,16 +376,18 @@ async def admin_state_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         disable_web_page_preview=False,
                         reply_markup=keyboard,
                     )
+
                 sent_count += 1
+
             except Exception as exc:
                 logger.warning("Ошибка рассылки chat_id=%s: %s", chat_id, exc)
                 failed_count += 1
 
         del broadcast_data[user.id]
+
         await msg.reply_text(
             f"✅ Рассылка завершена.\nОтправлено: {sent_count}\nНе доставлено: {failed_count}"
         )
-        return
 
 
 async def post_init(application: Application):
@@ -398,7 +401,6 @@ def main():
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(get_bonus, pattern=r"^get_bonus$"))
     app.add_handler(CommandHandler("admin", admin_menu))
     app.add_handler(
         CallbackQueryHandler(
@@ -414,4 +416,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
