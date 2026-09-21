@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 import psycopg2
@@ -21,19 +22,49 @@ load_dotenv()
 # -----------------------------
 # Настройки
 # -----------------------------
+BASE_DIR = Path(__file__).resolve().parent
 TOKEN = os.getenv("BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # -----------------------------
 # Сообщения после /start
 # -----------------------------
-PROMO_MESSAGE_1 = """Sizning arizangiz navbatda 1-raqamda"""
+PROMO_MESSAGE_1 = """<b>Arizangizni tez va oson tekshiramiz. Javobni qisqa vaqt ichida oling.</b>
 
-PROMO_MESSAGE_2 = """Кредит шартларини билиш ва аризангизни кўриб чиқиш жараёнини бошлаш учун менеджерга мурожаат қилинг:
+<b>Sizga mos moliyaviy yechimlardan foydalaning. Barcha jarayon onlayn va tushunarli tarzda amalga oshiriladi.</b>
 
-@MuhlisaImonKredit"""
+<b>Siz uchun eng yaxshi kredit taklifi!</b>
 
-PROMO_DELAY_SECONDS = 60
+💼 Biz turli ehtiyojlar uchun mos kredit variantlarini taklif qilamiz.
+❓ Tezda pul kerak bo‘lyaptimi?
+✅ Eng qulay kredit variantini tanlashga yordam beramiz!
+
+✉️ Moliyaviy mutaxassisimiz sizga maslahat berish uchun doimo tayyor.
+
+<a href="https://t.me/MuhlisaImonKredit">KREDIT OLISH</a>
+<a href="https://t.me/MuhlisaImonKredit">KREDIT OLISH</a>"""
+
+PROMO_MESSAGE_2 = """<b>Arizangizni tez va oson tekshiramiz. Javobni qisqa vaqt ichida oling.</b>
+
+<b>Sizga mos moliyaviy yechimlardan foydalaning. Barcha jarayon onlayn va tushunarli tarzda amalga oshiriladi.</b>
+
+<b>Siz uchun eng yaxshi kredit taklifi!</b>
+
+💼 Biz turli ehtiyojlar uchun mos kredit variantlarini taklif qilamiz.
+❓ Tezda pul kerak bo‘lyaptimi?
+✅ Eng qulay kredit variantini tanlashga yordam beramiz!"""
+
+PROMO_MESSAGE_3 = """✉️ Moliyaviy mutaxassisimiz sizga maslahat berish uchun doimo tayyor.
+
+<a href="https://t.me/MuhlisaImonKredit">KREDIT OLISH</a>
+<a href="https://t.me/MuhlisaImonKredit">KREDIT OLISH</a>
+<a href="https://t.me/MuhlisaImonKredit">KREDIT OLISH</a>"""
+
+PROMO_SECOND_DELAY_SECONDS = 60 * 60
+PROMO_THIRD_DELAY_SECONDS = 75 * 60
+
+# У первого и второго сообщения одна и та же фотография.
+PROMO_PHOTO = BASE_DIR / "promo.jpg"
 
 ADMINS = ["suerde", "fbtraffick"]
 
@@ -108,23 +139,48 @@ def is_admin(username: Optional[str]) -> bool:
     return bool(username and username in ADMINS)
 
 
-async def send_promo_message(application: Application, chat_id: int, message: str) -> bool:
+async def send_promo_message(
+    application: Application,
+    chat_id: int,
+    message: str,
+    photo_path: Optional[Path] = None,
+) -> bool:
     try:
-        await application.bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            disable_web_page_preview=True,
-        )
+        if photo_path and photo_path.exists() and photo_path.is_file():
+            with photo_path.open("rb") as photo:
+                await application.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=message,
+                    parse_mode="HTML",
+                )
+        else:
+            if photo_path:
+                logger.warning("Фото не найдено: %s. Отправляю только текст.", photo_path)
+            await application.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         return True
     except Exception as exc:
-        logger.warning("Не удалось отправить сообщение chat_id=%s: %s", chat_id, exc)
+        logger.warning("Не удалось отправить промо chat_id=%s: %s", chat_id, exc)
         deactivate(chat_id)
         return False
 
 
-async def send_second_promo_after_delay(application: Application, chat_id: int):
-    await asyncio.sleep(PROMO_DELAY_SECONDS)
-    await send_promo_message(application, chat_id, PROMO_MESSAGE_2)
+async def send_followup_promos(application: Application, chat_id: int):
+    # Второе сообщение — через 1 час после /start.
+    await asyncio.sleep(PROMO_SECOND_DELAY_SECONDS)
+    ok = await send_promo_message(application, chat_id, PROMO_MESSAGE_2, PROMO_PHOTO)
+    if not ok:
+        return
+
+    # Третье сообщение — через 1 час 15 минут после /start,
+    # то есть через 15 минут после второго.
+    await asyncio.sleep(PROMO_THIRD_DELAY_SECONDS - PROMO_SECOND_DELAY_SECONDS)
+    await send_promo_message(application, chat_id, PROMO_MESSAGE_3)
 
 
 # -----------------------------
@@ -139,17 +195,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     upsert_chat_db(chat.id, user.username, user.first_name)
 
-    # Первое сообщение — сразу.
-    sent = await send_promo_message(context.application, chat.id, PROMO_MESSAGE_1)
+    # Первое сообщение — сразу после /start.
+    sent = await send_promo_message(
+        context.application,
+        chat.id,
+        PROMO_MESSAGE_1,
+        PROMO_PHOTO,
+    )
     if not sent:
         return
 
-    # Второе сообщение — через 1 минуту.
-    # Создаём отдельную задачу, чтобы бот не зависал на sleep и продолжал отвечать другим пользователям.
+    # Второй и третий посты отправляются отдельной задачей,
+    # чтобы бот продолжал работать для других пользователей.
     context.application.create_task(
-        send_second_promo_after_delay(context.application, chat.id),
+        send_followup_promos(context.application, chat.id),
         update=update,
-        name=f"promo2_{chat.id}",
+        name=f"promo_followups_{chat.id}",
     )
 
 
@@ -195,33 +256,34 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Начинаю рассылку...")
 
         subscribers = get_active_subscribers()
-        first_sent_chat_ids = []
-        failed_chat_ids = set()
+        sent = 0
+        failed = 0
 
-        # Первое сообщение всем активным пользователям.
+        # Первое сообщение отправляем всем сразу.
+        # Для каждого успешно получившего запускаем второй и третий посты по таймеру.
         for record in subscribers:
             chat_id = int(record["chat_id"])
-            ok = await send_promo_message(context.application, chat_id, PROMO_MESSAGE_1)
+            ok = await send_promo_message(
+                context.application,
+                chat_id,
+                PROMO_MESSAGE_1,
+                PROMO_PHOTO,
+            )
+
             if ok:
-                first_sent_chat_ids.append(chat_id)
+                sent += 1
+                context.application.create_task(
+                    send_followup_promos(context.application, chat_id),
+                    name=f"promo_followups_broadcast_{chat_id}",
+                )
             else:
-                failed_chat_ids.add(chat_id)
-
-        # Второе сообщение через минуту.
-        if first_sent_chat_ids:
-            await asyncio.sleep(PROMO_DELAY_SECONDS)
-
-            for chat_id in first_sent_chat_ids:
-                ok = await send_promo_message(context.application, chat_id, PROMO_MESSAGE_2)
-                if not ok:
-                    failed_chat_ids.add(chat_id)
-
-        sent = len(subscribers) - len(failed_chat_ids)
-        failed = len(failed_chat_ids)
+                failed += 1
 
         if query.message:
             await query.message.reply_text(
-                f"✅ Промо отправлено: {sent}\n❌ Не доставлено: {failed}"
+                f"✅ Первая часть промо отправлена: {sent}\n"
+                f"❌ Не доставлено: {failed}\n\n"
+                "Второй пост уйдёт через 1 час, третий — через 1 час 15 минут."
             )
 
     elif data == "stats":
